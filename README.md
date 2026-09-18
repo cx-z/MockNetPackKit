@@ -5,20 +5,14 @@ MockNetPack 的 iOS Debug SDK —— App 进程内 HTTP 抓包上传与远端 Mo
 > **M0 状态**：当前为**空骨架**（SwiftPM 包），仅含版本占位，无任何抓包/拦截/连接实现（属 M1+）。
 > 上游无第三方代码依赖；服务端见 `server/`。
 
-## 硬约束：仅 Debug 携带
+## 集成方式：由业务方决定，SDK 不做自控制
 
-本 SDK **只能存在于 Debug 构建产物中，Release 产物不得包含本 SDK**（需求文档 §7.2 / F7.2，项目级验收门）。
+本 SDK **自身不做 Debug/Release 判断，也不强制任何隔离策略**——是否集成、在哪个配置集成，完全由接入的业务 App 自行决定。
 
-接入时务必同时满足两层：
+接入方 IntegratingApp（IntegratingApp）的要求是：**Release 产物中不包含本 SDK 的代码/符号**（是"不携带"，不只是"不生效"）。这一要求由 IntegratingApp 的构建集成层保证，不在 SDK 内部实现。推荐做法见 `tasks/M0-SDK接入要点.md`，要点是：
 
-1. **编译层（业务代码）**：业务侧所有对 `MockNetPackKit` 的调用必须用 `#if DEBUG` 包裹，Release 编译后对本库零引用：
-   ```swift
-   #if DEBUG
-   import MockNetPackKit
-   // ... 初始化 / 启动抓包 ...
-   #endif
-   ```
-2. **链接/产物层（验收门）**：Release Archive 中不得出现本库符号。正式校验脚本/CI 检查在 M5 落地；M0/M1 先用 `nm`/`strings` 抽检。
+1. 业务侧所有对 `MockNetPackKit` 的调用用 `#if DEBUG` 包裹（Release 编译后对本库零引用）；
+2. 出包后由 IntegratingApp 侧校验 Release Archive 不含本库符号（M5 落 CI）。
 
 ## 包结构
 
