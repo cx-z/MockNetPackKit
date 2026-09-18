@@ -1,13 +1,15 @@
 // swift-tools-version: 6.0
 //
 // MockNetPackKit —— 仅 Debug 构建的 HTTP 抓包与 Mock SDK。
-// M0 阶段仅为空骨架：不含拦截器/连接实现（属 M1+）。
+// M1.5 起包含连接层（注册/心跳/会话状态）；拦截器属 M2、Mock 客户端属 M3。
+// macOS 平台声明仅用于在 macOS 上跑单元测试/冒烟（部署目标为 iOS 15）。
 import PackageDescription
 
 let package = Package(
     name: "MockNetPackKit",
     platforms: [
-        .iOS(.v15)
+        .iOS(.v15),
+        .macOS(.v12)
     ],
     products: [
         // 业务工程通过此 product 链接本 SDK
@@ -17,6 +19,10 @@ let package = Package(
         .target(
             name: "MockNetPackKit",
             resources: []
+        ),
+        .executableTarget(
+            name: "MockNetPackSmoke",
+            dependencies: ["MockNetPackKit"]
         ),
         .testTarget(
             name: "MockNetPackKitTests",
