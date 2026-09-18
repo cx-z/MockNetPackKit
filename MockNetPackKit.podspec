@@ -1,10 +1,11 @@
 Pod::Spec.new do |s|
   s.name             = 'MockNetPackKit'
-  s.version          = '0.0.1-m0'
-  s.summary          = 'MockNetPack iOS SDK (skeleton). HTTP capture & remote mock, integrated by the host app.'
+  s.version          = '0.1.0-m1'
+  s.summary          = 'MockNetPack iOS SDK. HTTP capture & remote mock, integrated by the host app.'
   s.description      = <<-DESC
 MockNetPackKit is the client SDK for the internal HTTP capture & Mock platform.
-M0: scaffold only, no interceptor/connection implementation yet.
+M1.5: connection layer (did registration, heartbeat, session state); interceptor
+lands in M2, mock client in M3.
 Whether to integrate (and in which build configurations) is decided by the
 host app; IntegratingApp links this pod in Debug configuration only.
                        DESC
