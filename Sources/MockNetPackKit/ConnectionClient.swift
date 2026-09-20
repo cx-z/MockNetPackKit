@@ -82,4 +82,38 @@ struct ConnectionClient: Sendable {
             throw ConnectionClientError.decoding(error)
         }
     }
+
+    /// 发起 JSON GET 并解码响应（M3：规则增量拉取）。
+    func get<Resp: Decodable>(_ path: String, as type: Resp.Type) async throws -> Resp {
+        let base = baseURL.absoluteString.hasSuffix("/")
+            ? baseURL.absoluteString
+            : baseURL.absoluteString + "/"
+        guard let url = URL(string: base + path) else {
+            throw ConnectionClientError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = requestTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("1", forHTTPHeaderField: MockNetPackURLProtocol.skipHeader)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw error
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw ConnectionClientError.httpStatus(-1)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw ConnectionClientError.httpStatus(http.statusCode)
+        }
+        do {
+            return try JSONDecoder().decode(Resp.self, from: data)
+        } catch {
+            throw ConnectionClientError.decoding(error)
+        }
+    }
 }

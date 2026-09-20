@@ -103,6 +103,9 @@ struct TrafficEntry: Encodable {
     /// 错误信息；成功时为 nil。
     var error: String?
     var durationMs: Int
+    /// 命中 Mock 规则回包时为 true（契约 v0.3.0；服务端在 Web 请求流标注
+    /// “Mock 命中”）。走真实网络时为 false。
+    var mocked: Bool = false
 }
 
 /// 批量上传请求（契约 TrafficUploadRequest；单批 ≤500 条，由 SDK 攒批控制）。
@@ -117,4 +120,34 @@ struct TrafficUploadRequest: Encodable {
 struct TrafficUploadResponse: Decodable {
     let accepted: Bool
     let count: Int
+}
+
+// ============================================================================
+// Mock 规则模型（与 server/openapi/mocknetpack.yaml v0.3.0 对齐，M3.4）
+// ============================================================================
+
+/// Mock 回包（契约 MockResponse）。
+struct MockResponse: Codable, Equatable {
+    let statusCode: Int
+    var headers: [String: String]?
+    var body: String?
+}
+
+/// 一条设备级 Mock 规则（契约 MockRule）。SDK 侧只关心匹配与回包字段；
+/// source/createdAt 等由服务端管理，SDK 解码后不使用。
+struct MockRule: Codable, Equatable {
+    let id: String
+    let method: String
+    let path: String
+    let response: MockResponse
+    let enabled: Bool
+    /// 服务端计算的运行时生效态；SDK 只对 effective=true 的规则回包。
+    let effective: Bool
+}
+
+/// 规则下发响应（契约 MockRuleList）。SDK 增量拉取时 version 为当前版本、
+/// rules 为 effective=true 的规则集（版本未变时为空数组）。
+struct MockRuleList: Decodable {
+    let version: Int
+    let rules: [MockRule]
 }
