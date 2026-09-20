@@ -103,9 +103,17 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         let response = HTTPURLResponse(
             url: url, statusCode: mock.statusCode,
             httpVersion: "HTTP/1.1", headerFields: headerFields)
-        // 优先用 base64 原始字节回放（二进制接口），否则用 UTF-8 文本。
+        // M5 回放三级 fallback：
+        // ① body 有编辑过的文本 + encoder 可用 → 编码回私有二进制协议字节（Web 编辑生效）
+        // ② bodyBase64 有原始字节 → 按原始字节回放（未编辑的二进制规则）
+        // ③ 否则 → UTF-8 文本直传（纯文本 JSON 接口）
+        let contentType = headerFields["Content-Type"]
         let data: Data
-        if let b64 = mock.bodyBase64, let decoded = Data(base64Encoded: b64), !decoded.isEmpty {
+        if let text = mock.body, !text.isEmpty,
+           let encoder = TrafficCaptureController.shared.bodyEncoder,
+           let encoded = encoder(text, contentType) {
+            data = encoded
+        } else if let b64 = mock.bodyBase64, let decoded = Data(base64Encoded: b64), !decoded.isEmpty {
             data = decoded
         } else {
             data = Data((mock.body ?? "").utf8)

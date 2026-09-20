@@ -26,6 +26,8 @@ final class MockRuleTests: XCTestCase {
 
     override func tearDown() {
         TrafficCaptureController.shared.stop()
+        TrafficCaptureController.shared.bodyEncoder = nil
+        TrafficCaptureController.shared.bodyDecoder = nil
         MockRuleController.shared.reset()
         MockURLProtocol.handler = nil
         MockURLProtocol.recordedRequests.removeAll()
@@ -236,6 +238,110 @@ final class MockRuleTests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         let hit = MockURLProtocol.recordedRequests.contains { $0.url?.path == "/api/a" }
         XCTAssertFalse(hit, "idle 时即使有规则也不应拦截/转发")
+    }
+
+    // MARK: - M5 encoder: 文本→二进制回放
+
+    /// 有 encoder + 编辑过的文本 body → 回放 encoder 输出的二进制（Web 编辑生效）。
+    func testEncoderEncodesEditedTextToBinary() throws {
+        let controller = TrafficCaptureController.shared
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-enc")
+
+        // 模拟 IntegratingApp 的 xcp encoder：给文本加个魔数头，假装编码成二进制。
+        TrafficCaptureController.shared.bodyEncoder = { text, contentType in
+            XCTAssertEqual(contentType, "application/x-xcp")
+            return Data("ENC:".utf8) + Data(text.utf8)
+        }
+
+        MockRuleController.shared.applyForTesting(rules: [MockRule(
+            id: "r1", method: "POST", path: "/api/xcp",
+            response: MockResponse(statusCode: 200,
+                headers: ["Content-Type": "application/x-xcp"],
+                body: #"{"name":"沈淮行test"}"#),
+            enabled: true, effective: true)], version: 1)
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { _ in XCTFail("命中 Mock 不应转发"); return jsonResponse(200, json: [:]) }
+
+        var req = URLRequest(url: URL(string: "https://api.example.com/api/xcp")!)
+        req.httpMethod = "POST"
+        let received = Box<Data?>(nil)
+        let exp = expectation(description: "encoded mock")
+        businessSession().dataTask(with: req) { data, _, _ in
+            received.value = data
+            exp.fulfill()
+        }.resume()
+        wait(for: [exp], timeout: 3)
+
+        XCTAssertEqual(received.value, Data("ENC:".utf8) + Data(#"{"name":"沈淮行test"}"#.utf8),
+                       "应回放 encoder 输出的二进制，而非原文")
+    }
+
+    /// encoder 返回 nil → 回退到 bodyBase64 原始字节（未编辑的二进制规则不崩）。
+    func testEncoderNilFallsBackToBodyBase64() throws {
+        let controller = TrafficCaptureController.shared
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-fb")
+
+        TrafficCaptureController.shared.bodyEncoder = { _, _ in return nil }
+
+        let origBytes = Data([0x00, 0x01, 0xAA, 0xBB])
+        MockRuleController.shared.applyForTesting(rules: [MockRule(
+            id: "r1", method: "GET", path: "/api/bin",
+            response: MockResponse(statusCode: 200,
+                headers: ["Content-Type": "application/x-xcp"],
+                body: "[binary 4 bytes]",
+                bodyBase64: origBytes.base64EncodedString()),
+            enabled: true, effective: true)], version: 1)
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { _ in XCTFail("命中 Mock 不应转发"); return jsonResponse(200, json: [:]) }
+
+        let req = URLRequest(url: URL(string: "https://api.example.com/api/bin")!)
+        let received = Box<Data?>(nil)
+        let exp = expectation(description: "base64 fallback")
+        businessSession().dataTask(with: req) { data, _, _ in
+            received.value = data
+            exp.fulfill()
+        }.resume()
+        wait(for: [exp], timeout: 3)
+
+        XCTAssertEqual(received.value, origBytes, "encoder 返回 nil 应回退到 bodyBase64 原始字节")
+    }
+
+    /// 纯文本 JSON 接口（无 encoder、无 bodyBase64）→ 直传 UTF-8 文本。
+    func testPlainTextFallsBackToUTF8() throws {
+        let controller = TrafficCaptureController.shared
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-txt")
+        // 不配 encoder（nil）
+        MockRuleController.shared.applyForTesting(rules: [MockRule(
+            id: "r1", method: "GET", path: "/api/json",
+            response: MockResponse(statusCode: 200,
+                headers: ["Content-Type": "application/json"],
+                body: #"{"ok":true}"#),
+            enabled: true, effective: true)], version: 1)
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { _ in XCTFail("命中 Mock 不应转发"); return jsonResponse(200, json: [:]) }
+
+        let req = URLRequest(url: URL(string: "https://api.example.com/api/json")!)
+        let received = Box<Data?>(nil)
+        let exp = expectation(description: "plain text")
+        businessSession().dataTask(with: req) { data, _, _ in
+            received.value = data
+            exp.fulfill()
+        }.resume()
+        wait(for: [exp], timeout: 3)
+
+        XCTAssertEqual(received.value, Data(#"{"ok":true}"#.utf8))
     }
 
     // MARK: - 辅助
