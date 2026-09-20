@@ -44,6 +44,14 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         startTime = Date()
 
+        // M3.4：先查本地 Mock 快照。命中则直接合成回包，不转发真实网络。
+        let method = request.httpMethod ?? "GET"
+        let path = request.url?.path ?? ""
+        if let mock = MockRuleController.shared.match(method: method, path: path) {
+            serve(mock: mock, method: method, path: path)
+            return
+        }
+
         // 请求体：URLSession 可能把 httpBody 转为 httpBodyStream。先取 body 用于
         // 采集；若为 stream 则读出来重建 httpBody，保证转发请求不丢 body。
         var forwarded = request
@@ -80,6 +88,54 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         forwardingTask?.cancel()
         forwardingSession?.invalidateAndCancel()
         forwardingSession = nil
+    }
+
+    // MARK: - Mock 回包（M3.4）
+
+    /// 命中本地 Mock 规则：合成 HTTP 响应直接回给原请求者，不转发真实网络，
+    /// 同时记一条 mocked=true 的临时流量（会话结束随临时流量清空）。
+    private func serve(mock: MockResponse, method: String, path: String) {
+        let url = request.url ?? URL(string: "http://localhost/")!
+        var headerFields = mock.headers ?? [:]
+        if headerFields["Content-Type"] == nil {
+            headerFields["Content-Type"] = "application/json"
+        }
+        let response = HTTPURLResponse(
+            url: url, statusCode: mock.statusCode,
+            httpVersion: "HTTP/1.1", headerFields: headerFields)
+        let data = Data((mock.body ?? "").utf8)
+
+        // 记录一条 Mock 命中流量。
+        var reqHeaders: [String: [String]] = [:]
+        for (key, value) in request.allHTTPHeaderFields ?? [:] {
+            reqHeaders[key] = [value]
+        }
+        let entry = TrafficEntry(
+            timestamp: startTime,
+            method: method,
+            url: url.absoluteString,
+            path: path,
+            query: url.query ?? "",
+            requestHeaders: reqHeaders,
+            requestBody: "",
+            statusCode: mock.statusCode,
+            responseHeaders: headerFields.mapValues { [$0] },
+            responseBody: mock.body,
+            error: nil,
+            durationMs: max(0, Int(Date().timeIntervalSince(startTime) * 1000)),
+            mocked: true
+        )
+        TrafficCaptureController.shared.record(entry)
+
+        guard let response else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !data.isEmpty {
+            client?.urlProtocol(self, didLoad: data)
+        }
+        client?.urlProtocolDidFinishLoading(self)
     }
 
     // MARK: - 采集

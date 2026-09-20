@@ -99,6 +99,7 @@ final class ConnectionController: @unchecked Sendable {
         log("MockNetPackKit stopped")
         // M2.4：先停止采集（注销 URLProtocol、清空待上传批次），再广播 idle 状态。
         TrafficCaptureController.shared.stop()
+        MockRuleController.shared.reset()
         setConnectionState(.offline)
         setSessionState(.idle)
     }
@@ -188,6 +189,10 @@ final class ConnectionController: @unchecked Sendable {
                 capturing: resp.session != nil,
                 sessionID: resp.session?.id)
             setSessionState(resp.session != nil ? .capturing : .idle)
+            // M3.4：按服务端 rulesVersion 增量拉取本地 Mock 快照（fail-open）。
+            await MockRuleController.shared.syncIfNeeded(
+                client: client, app: appID, did: did,
+                serverVersion: resp.rulesVersion ?? 0)
             finishCycle()
             scheduleNext(delay: heartbeatInterval())
 
