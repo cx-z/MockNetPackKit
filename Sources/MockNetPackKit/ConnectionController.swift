@@ -241,7 +241,9 @@ final class ConnectionController: @unchecked Sendable {
             log("registered app=\(appID) did=\(did)")
             setConnectionState(.connected)
             finishCycle()
-            scheduleNext(delay: heartbeatInterval())
+            // 注册后尽快做第一次心跳：让抓包会话状态与 Mock 规则快照在启动首屏
+            // 请求发出前就位（M3 fix：原为等满一个心跳间隔，启动首屏漏 Mock）。
+            scheduleNext(delay: 2)
         } catch {
             let backoff = advanceBackoff()
             setConnectionState(.offline)

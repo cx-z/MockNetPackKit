@@ -164,7 +164,8 @@ final class ConnectionControllerTests: XCTestCase {
         controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
 
         // 出现 404 后应自动重新注册（register 调用 ≥ 2），并恢复心跳。
-        waitUntil { self.registerCalls >= 2 && self.heartbeatCalls >= 2 }
+        // M3 fix：注册后首次心跳为固定 2s，两轮共约 4s，放宽到 6s。
+        waitUntil(timeout: 6) { self.registerCalls >= 2 && self.heartbeatCalls >= 2 }
         waitUntil { self.controller.connectionState == .connected }
     }
 
@@ -231,18 +232,24 @@ final class ConnectionControllerTests: XCTestCase {
                     "serverConfig": ["heartbeatIntervalSeconds": 5, "heartbeatTimeoutSeconds": 60],
                 ])
             }
-            return jsonResponse(200, json: heartbeatResponseJSON(session: nil))
+            return jsonResponse(200, json: [
+                "ok": true, "serverTime": "2026-09-19T00:00:01Z",
+                "serverConfig": ["heartbeatIntervalSeconds": 5, "heartbeatTimeoutSeconds": 60],
+                "session": nil as Any?, "rulesVersion": 0,
+            ])
         }
 
         controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
 
-        // 第一次心跳应在约 5s 后发生：8s 内等到，且间隔明显大于 override 档（0.15s）。
-        let start = Date()
-        waitUntil(timeout: 8) { self.heartbeatCalls >= 1 }
-        let elapsed = Date().timeIntervalSince(start)
-        XCTAssertGreaterThanOrEqual(elapsed, 4.0,
-            "心跳间隔应采纳服务端配置 5s（实测 \(elapsed)s）")
-        XCTAssertLessThanOrEqual(elapsed, 8.0)
+        // M3 fix：注册后首次心跳为快速 2s（启动首屏尽快拉规则），不验证首跳间隔；
+        // 验证从第二次起按服务端配置 5s 节奏心跳。
+        waitUntil(timeout: 4) { self.heartbeatCalls >= 1 }
+        let t1 = Date()
+        waitUntil(timeout: 10) { self.heartbeatCalls >= 2 }
+        let gap = Date().timeIntervalSince(t1)
+        XCTAssertGreaterThanOrEqual(gap, 4.0,
+            "第二次起心跳间隔应采纳服务端配置 5s（实测 \(gap)s）")
+        XCTAssertLessThanOrEqual(gap, 10.0)
     }
 
     // MARK: - M2.4 采集联动

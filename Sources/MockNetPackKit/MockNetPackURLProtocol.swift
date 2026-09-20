@@ -103,7 +103,13 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         let response = HTTPURLResponse(
             url: url, statusCode: mock.statusCode,
             httpVersion: "HTTP/1.1", headerFields: headerFields)
-        let data = Data((mock.body ?? "").utf8)
+        // 优先用 base64 原始字节回放（二进制接口），否则用 UTF-8 文本。
+        let data: Data
+        if let b64 = mock.bodyBase64, let decoded = Data(base64Encoded: b64), !decoded.isEmpty {
+            data = decoded
+        } else {
+            data = Data((mock.body ?? "").utf8)
+        }
 
         // 记录一条 Mock 命中流量。
         var reqHeaders: [String: [String]] = [:]
@@ -118,9 +124,11 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             query: url.query ?? "",
             requestHeaders: reqHeaders,
             requestBody: "",
+            requestBodyBase64: nil,
             statusCode: mock.statusCode,
             responseHeaders: headerFields.mapValues { [$0] },
             responseBody: mock.body,
+            responseBodyBase64: mock.bodyBase64,
             error: nil,
             durationMs: max(0, Int(Date().timeIntervalSince(startTime) * 1000)),
             mocked: true
@@ -150,6 +158,8 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             headers[key] = [value]
         }
 
+        let reqParts = Self.bodyParts(bodyData)
+        let respParts = data.map(Self.bodyParts)
         var entry = TrafficEntry(
             timestamp: startTime,
             method: request.httpMethod ?? "GET",
@@ -157,10 +167,12 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             path: request.url?.path ?? "",
             query: request.url?.query ?? "",
             requestHeaders: headers,
-            requestBody: Self.sanitizedBody(bodyData),
+            requestBody: reqParts.text,
+            requestBodyBase64: reqParts.base64,
             statusCode: http?.statusCode,
             responseHeaders: http.map { Self.headerFields($0.allHeaderFields) },
-            responseBody: data.map(Self.sanitizedBody),
+            responseBody: respParts?.text,
+            responseBodyBase64: respParts?.base64,
             error: error?.localizedDescription,
             durationMs: durationMs
         )
@@ -169,6 +181,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             entry.statusCode = nil
             entry.responseHeaders = nil
             entry.responseBody = nil
+            entry.responseBodyBase64 = nil
         }
         TrafficCaptureController.shared.record(entry)
     }
@@ -215,11 +228,19 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
 
     /// body 治理：超 1MB 截断；无法 UTF-8 解码的二进制以 "[binary N bytes]" 占位（契约）。
     static func sanitizedBody(_ data: Data?) -> String {
-        guard let data, !data.isEmpty else { return "" }
+        bodyParts(data).text
+    }
+
+    /// 返回 (展示文本, base64)。二进制时展示为占位文本、base64 携带原始字节；
+    /// 文本时 base64 为 nil（无需额外体积）。
+    static func bodyParts(_ data: Data?) -> (text: String, base64: String?) {
+        guard let data, !data.isEmpty else { return ("", nil) }
         let sample = data.count > bodyLimit ? data.prefix(bodyLimit) : data[...]
-        if let text = String(data: Data(sample), encoding: .utf8) {
-            return text
+        let truncated = Data(sample)
+        if let text = String(data: truncated, encoding: .utf8) {
+            return (text, nil)
         }
-        return "[binary \(data.count) bytes]"
+        // 二进制：保留原始字节的 base64（用于 Mock 回放）。
+        return ("[binary \(data.count) bytes]", truncated.base64EncodedString())
     }
 }

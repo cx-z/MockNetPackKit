@@ -96,10 +96,14 @@ struct TrafficEntry: Encodable {
     var query: String
     var requestHeaders: [String: [String]]
     var requestBody: String
+    /// 二进制请求体 base64（无法 UTF-8 解码时填充；否则 nil）。
+    var requestBodyBase64: String?
     /// 响应状态码；请求失败时为 nil。
     var statusCode: Int?
     var responseHeaders: [String: [String]]?
     var responseBody: String?
+    /// 二进制响应体 base64（无法 UTF-8 解码时填充；否则 nil）。
+    var responseBodyBase64: String?
     /// 错误信息；成功时为 nil。
     var error: String?
     var durationMs: Int
@@ -131,6 +135,8 @@ struct MockResponse: Codable, Equatable {
     let statusCode: Int
     var headers: [String: String]?
     var body: String?
+    /// 二进制回包 base64；存在时按原始字节回包，body 仅作展示。
+    var bodyBase64: String?
 }
 
 /// 一条设备级 Mock 规则（契约 MockRule）。SDK 侧只关心匹配与回包字段；
