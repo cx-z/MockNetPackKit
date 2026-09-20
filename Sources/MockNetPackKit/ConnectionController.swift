@@ -80,6 +80,13 @@ final class ConnectionController: @unchecked Sendable {
         log("MockNetPackKit connecting to \(server.absoluteString) app=\(appID ?? "?") did=\(self.did ?? "?")")
         setConnectionState(.connecting)
         scheduleNext()
+
+        // M2.4：启动流量采集（注册全局 URLProtocol；会话未激活时不拦截）。
+        TrafficCaptureController.shared.start(
+            serverURL: server,
+            appID: appID ?? "",
+            did: self.did ?? "",
+            logHandler: self.logHandler)
     }
 
     /// 停止连接层：停调度、清状态（did 保留，下次 start 复用）。
@@ -90,6 +97,8 @@ final class ConnectionController: @unchecked Sendable {
         inflight = false
         lock.unlock()
         log("MockNetPackKit stopped")
+        // M2.4：先停止采集（注销 URLProtocol、清空待上传批次），再广播 idle 状态。
+        TrafficCaptureController.shared.stop()
         setConnectionState(.offline)
         setSessionState(.idle)
     }
@@ -173,6 +182,11 @@ final class ConnectionController: @unchecked Sendable {
                 serverConfig = resp.serverConfig
             }
             setConnectionState(.connected)
+            // M2.4：先驱动流量采集启停，再广播会话状态——外部 onSessionStateChange
+            // 回调可能立即发起业务请求，此时采集开关必须已就绪（否则首批请求漏采）。
+            TrafficCaptureController.shared.updateSession(
+                capturing: resp.session != nil,
+                sessionID: resp.session?.id)
             setSessionState(resp.session != nil ? .capturing : .idle)
             finishCycle()
             scheduleNext(delay: heartbeatInterval())

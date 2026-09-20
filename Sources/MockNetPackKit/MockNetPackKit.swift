@@ -8,7 +8,7 @@ import Foundation
 public enum MockNetPackKit {
 
     /// SDK 版本号。
-    public static let version = "0.1.0-m1"
+    public static let version = "0.2.0-m2"
 
     /// 启动连接层：生成/读取 did → 注册设备 → 周期心跳 → 会话状态推导。
     /// - Parameters:

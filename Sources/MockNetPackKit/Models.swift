@@ -80,3 +80,41 @@ struct DeviceView: Decodable {
     let lastSeenAt: String?
     let registeredAt: String?
 }
+
+// ============================================================================
+// Traffic 模型（与 server/openapi/mocknetpack.yaml v0.2.0 对齐，M2.4）
+// ============================================================================
+
+/// 一条 HTTP 请求/响应的完整信息（契约 TrafficEntry）。
+/// id / sessionId 由服务端生成，SDK 不携带；mocked 由服务端默认 false（M3 起标记）。
+struct TrafficEntry: Encodable {
+    /// 请求发起时间（RFC3339）。
+    var timestamp: Date
+    var method: String
+    var url: String
+    var path: String
+    var query: String
+    var requestHeaders: [String: [String]]
+    var requestBody: String
+    /// 响应状态码；请求失败时为 nil。
+    var statusCode: Int?
+    var responseHeaders: [String: [String]]?
+    var responseBody: String?
+    /// 错误信息；成功时为 nil。
+    var error: String?
+    var durationMs: Int
+}
+
+/// 批量上传请求（契约 TrafficUploadRequest；单批 ≤500 条，由 SDK 攒批控制）。
+struct TrafficUploadRequest: Encodable {
+    let app: String
+    let did: String
+    let sessionId: String
+    let entries: [TrafficEntry]
+}
+
+/// 上传响应（契约 TrafficUploadResponse；count 为实际接受数）。
+struct TrafficUploadResponse: Decodable {
+    let accepted: Bool
+    let count: Int
+}
