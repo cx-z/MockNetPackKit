@@ -12,6 +12,8 @@
 import Foundation
 import MockNetPackKit
 
+setbuf(__stdoutp, nil)  // 行无缓冲，nohup 落盘实时可见
+
 // 顶层代码为 MainActor 隔离，@Sendable 闭包内用 Box 承载可变状态。
 final class SmokeBox<T>: @unchecked Sendable {
     var value: T
@@ -35,36 +37,32 @@ MockNetPackKit.onSessionStateChange = { state in
     print("[smoke] sessionState -> \(state)")
     guard state == .capturing, !didFire.value else { return }
     didFire.value = true
-    fireSampleRequests()
+    startPolling()
 }
 
-/// 发起模拟请求：3 个发往 mockd engine（本地可达，验证成功采集）+ 1 个不可达
-/// 端口（验证 error/失败采集）。URLSession 必须在 SDK start 之后创建，
-/// 才会包含全局注册的 MockNetPackURLProtocol。
-func fireSampleRequests() {
-    print("[smoke] fireSampleRequests -> \(engineBase)")
+/// 会话 capturing 期间，每 3s 发一组请求；观察状态码/响应体即可对比
+/// 「走真实 engine」与「命中 Mock 回包」。
+func startPolling() {
+    print("[smoke] startPolling -> \(engineBase)")
     let session = URLSession(configuration: .default)
-    for i in 0..<3 {
-        var req = URLRequest(url: URL(string: "\(engineBase)/smoke-request-\(i)")!)
-        req.httpMethod = i == 1 ? "POST" : "GET"
-        if i == 1 {
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = Data("{\"sample\":1,\"seq\":\(i)}".utf8)
+    var tick = 0
+    Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { t in
+        tick += 1
+        for i in 0..<3 {
+            var req = URLRequest(url: URL(string: "\(engineBase)/smoke-request-\(i)")!)
+            req.httpMethod = i == 1 ? "POST" : "GET"
+            session.dataTask(with: req) { data, response, error in
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                print("[smoke] tick=\(tick) req-\(i): status=\(code) body=\(String(body.prefix(60))) err=\(error?.localizedDescription ?? "-")")
+            }.resume()
         }
-        print("[smoke] firing req-\(i) \(req.httpMethod ?? "GET") \(req.url?.absoluteString ?? "?")")
-        session.dataTask(with: req) { _, response, error in
-            print("[smoke] req-\(i): status=\((response as? HTTPURLResponse)?.statusCode ?? -1) error=\(error?.localizedDescription ?? "nil")")
-        }.resume()
     }
-    print("[smoke] firing req-unreachable")
-    session.dataTask(with: URL(string: "http://127.0.0.1:59999/unreachable")!) { _, _, error in
-        print("[smoke] req-unreachable: error=\(error?.localizedDescription ?? "nil")")
-    }.resume()
 }
 
 MockNetPackKit.start(server: server, appID: "com.mocknetpack.smoke", logHandler: { print("[sdk] \($0)") })
 
-// 运行 60s，期间可外部激活会话验证状态切换与流量采集（心跳默认 20s，留足窗口）。
-RunLoop.main.run(until: Date().addingTimeInterval(60))
+// 运行 180s，期间可外部激活会话验证状态切换与流量采集/规则命中。
+RunLoop.main.run(until: Date().addingTimeInterval(180))
 MockNetPackKit.stop()
 print("[smoke] done. did=\(MockNetPackKit.did ?? "?")")
