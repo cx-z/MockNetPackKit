@@ -104,6 +104,8 @@ struct TrafficEntry: Encodable {
     var responseBody: String?
     /// 二进制响应体 base64（无法 UTF-8 解码时填充；否则 nil）。
     var responseBodyBase64: String?
+    /// App 注入的协议解码器解出的可读响应体文本（M4）；仅展示用，回放仍走 base64。
+    var responseBodyDecoded: String?
     /// 错误信息；成功时为 nil。
     var error: String?
     var durationMs: Int

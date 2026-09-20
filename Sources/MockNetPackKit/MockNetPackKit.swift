@@ -8,7 +8,21 @@ import Foundation
 public enum MockNetPackKit {
 
     /// SDK 版本号。
-    public static let version = "0.2.0-m3"
+    public static let version = "0.2.0-m4"
+
+    /// 响应体协议解码器（M4）：由业务 App 注入，把私有二进制协议字节
+    /// （如 xcp AES+gzip）解成可读 UTF-8 文本，仅用于 Web 展示；原始字节的
+    /// base64 仍单独保留用于回放。返回 nil 表示解不出（回退 `[binary N bytes]`）。
+    /// - Parameters:
+    ///   - data: 响应体原始字节（未截断的完整数据，调用方负责控制体积）。
+    ///   - contentType: 响应 Content-Type 头，可用于判断是否需要解码。
+    public typealias BodyDecoder = @Sendable (_ data: Data, _ contentType: String?) -> String?
+
+    /// 注入响应体协议解码器（M4）。nil 表示移除解码器。在后台线程调用，
+    /// 失败/未就绪时返回 nil，SDK 回退到 `[binary N bytes]` 占位。
+    public static func setBodyDecoder(_ decoder: BodyDecoder?) {
+        TrafficCaptureController.shared.bodyDecoder = decoder
+    }
 
     /// 启动连接层：生成/读取 did → 注册设备 → 周期心跳 → 会话状态推导。
     /// - Parameters:

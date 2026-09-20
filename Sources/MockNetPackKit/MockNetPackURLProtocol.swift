@@ -182,6 +182,12 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             entry.responseHeaders = nil
             entry.responseBody = nil
             entry.responseBodyBase64 = nil
+        } else if let raw = data, !raw.isEmpty,
+                  let decoder = TrafficCaptureController.shared.bodyDecoder {
+            // M4：调 App 注入的解码器把二进制私有协议解成可读文本（仅展示）。
+            // 解码用与 base64 相同的截断样本；失败返回 nil 则回退占位文本。
+            let sample = raw.count > Self.bodyLimit ? Data(raw.prefix(Self.bodyLimit)) : raw
+            entry.responseBodyDecoded = decoder(sample, http?.value(forHTTPHeaderField: "Content-Type"))
         }
         TrafficCaptureController.shared.record(entry)
     }

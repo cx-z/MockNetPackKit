@@ -42,6 +42,14 @@ final class TrafficCaptureController: @unchecked Sendable {
     private var serverURLValue: URL?
     private var logHandler: (@Sendable (String) -> Void)?
 
+    /// App 注入的响应体解码器（M4）；由 MockNetPackKit.setBodyDecoder 设置，
+    /// URLProtocol 在组装真实响应时读取。独立小锁保护（设置低频、读取高频）。
+    private let decoderLock = NSLock()
+    private var bodyDecoderValue: MockNetPackKit.BodyDecoder?
+    var bodyDecoder: MockNetPackKit.BodyDecoder? {
+        get { decoderLock.lock(); defer { decoderLock.unlock() }; return bodyDecoderValue }
+        set { decoderLock.lock(); bodyDecoderValue = newValue; decoderLock.unlock() }
+    }
     private var pending: [TrafficEntry] = []
     private var pendingBytes = 0
 
