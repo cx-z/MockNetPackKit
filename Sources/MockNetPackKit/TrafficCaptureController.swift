@@ -50,6 +50,14 @@ final class TrafficCaptureController: @unchecked Sendable {
         get { decoderLock.lock(); defer { decoderLock.unlock() }; return bodyDecoderValue }
         set { decoderLock.lock(); bodyDecoderValue = newValue; decoderLock.unlock() }
     }
+    /// App 注入的响应体编码器（M5）；由 MockNetPackKit.setBodyEncoder 设置，
+    /// URLProtocol 在回放编辑过的文本回包时调用，把文本重新编码回二进制协议字节。
+    /// 与 bodyDecoder 共用同一把小锁。
+    private var bodyEncoderValue: MockNetPackKit.BodyEncoder?
+    var bodyEncoder: MockNetPackKit.BodyEncoder? {
+        get { decoderLock.lock(); defer { decoderLock.unlock() }; return bodyEncoderValue }
+        set { decoderLock.lock(); bodyEncoderValue = newValue; decoderLock.unlock() }
+    }
     private var pending: [TrafficEntry] = []
     private var pendingBytes = 0
 
