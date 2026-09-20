@@ -16,6 +16,9 @@ enum ConnectionClientError: Error {
 ///
 /// 设计为值类型（struct + Sendable，无共享状态），通过注入
 /// `URLSessionConfiguration` 支持测试（MockURLProtocol）。
+///
+/// 所有 SDK 自身请求（注册/心跳/流量上传）携带跳过标记 header：
+/// `MockNetPackURLProtocol.canInit` 据此放行，避免抓包器递归拦截自身流量。
 struct ConnectionClient: Sendable {
     let session: URLSession
     let baseURL: URL
@@ -47,6 +50,7 @@ struct ConnectionClient: Sendable {
         request.httpMethod = "POST"
         request.timeoutInterval = requestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("1", forHTTPHeaderField: MockNetPackURLProtocol.skipHeader)
 
         if let body = body {
             let encoder = JSONEncoder()

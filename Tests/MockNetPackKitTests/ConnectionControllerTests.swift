@@ -34,6 +34,7 @@ final class ConnectionControllerTests: XCTestCase {
         controller = nil
         MockURLProtocol.handler = nil
         MockURLProtocol.recordedRequests.removeAll()
+        TrafficCaptureController.shared.stop()
         super.tearDown()
     }
 
@@ -91,7 +92,7 @@ final class ConnectionControllerTests: XCTestCase {
             return jsonResponse(200, json: heartbeatResponseJSON(session: nil))
         }
 
-        controller.start(server: serverURL, appID: appID, appVersion: "1.0", sdkVersion: "0.1.0-m1", osVersion: "17.5")
+        controller.start(server: serverURL, appID: appID, appVersion: "1.0", sdkVersion: "0.2.0-m2", osVersion: "17.5")
 
         // 先注册、再心跳。
         waitUntil { self.registerCalls >= 1 && self.heartbeatCalls >= 1 }
@@ -101,7 +102,7 @@ final class ConnectionControllerTests: XCTestCase {
         let body = bodyOfRequest(registerReq!)
         XCTAssertEqual(body?["app"] as? String, appID)
         XCTAssertEqual(body?["platform"] as? String, "ios")
-        XCTAssertEqual(body?["sdkVersion"] as? String, "0.1.0-m1")
+        XCTAssertEqual(body?["sdkVersion"] as? String, "0.2.0-m2")
         XCTAssertEqual(body?["appVersion"] as? String, "1.0")
         XCTAssertNotNil(body?["did"] as? String)
 
@@ -135,7 +136,7 @@ final class ConnectionControllerTests: XCTestCase {
             if state == .capturing { callback.fulfill() }
         }
 
-        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.1.0-m1", osVersion: "17.5")
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
 
         wait(for: [callback], timeout: 3)
         XCTAssertEqual(controller.sessionState, .capturing)
@@ -160,7 +161,7 @@ final class ConnectionControllerTests: XCTestCase {
             return jsonResponse(200, json: heartbeatResponseJSON(session: nil))
         }
 
-        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.1.0-m1", osVersion: "17.5")
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
 
         // 出现 404 后应自动重新注册（register 调用 ≥ 2），并恢复心跳。
         waitUntil { self.registerCalls >= 2 && self.heartbeatCalls >= 2 }
@@ -179,7 +180,7 @@ final class ConnectionControllerTests: XCTestCase {
             return jsonResponse(200, json: heartbeatResponseJSON(session: nil))
         }
 
-        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.1.0-m1", osVersion: "17.5")
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
 
         // 网络失败 → offline + 重试（心跳多次）。
         waitUntil { self.controller.connectionState == .offline && self.heartbeatCalls >= 2 }
@@ -200,7 +201,7 @@ final class ConnectionControllerTests: XCTestCase {
             return jsonResponse(200, json: heartbeatResponseJSON(session: nil))
         }
 
-        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.1.0-m1", osVersion: "17.5")
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
         waitUntil { heartbeatCount.value >= 2 }
 
         controller.stop()
@@ -233,7 +234,7 @@ final class ConnectionControllerTests: XCTestCase {
             return jsonResponse(200, json: heartbeatResponseJSON(session: nil))
         }
 
-        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.1.0-m1", osVersion: "17.5")
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
 
         // 第一次心跳应在约 5s 后发生：8s 内等到，且间隔明显大于 override 档（0.15s）。
         let start = Date()
@@ -242,5 +243,46 @@ final class ConnectionControllerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(elapsed, 4.0,
             "心跳间隔应采纳服务端配置 5s（实测 \(elapsed)s）")
         XCTAssertLessThanOrEqual(elapsed, 8.0)
+    }
+
+    // MARK: - M2.4 采集联动
+
+    /// 心跳带会话 → 流量采集开启；会话结束 → 采集关闭。
+    func testHeartbeatWithSession_DrivesTrafficCapture() {
+        let serverHasSession = Box(true)
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/devices/register") == true {
+                return jsonResponse(200, json: registerResponseJSON(app: "com.test.app", did: "any"))
+            }
+            if serverHasSession.value {
+                return jsonResponse(200, json: heartbeatResponseJSON(session: sessionJSON(id: "sess-1")))
+            }
+            return jsonResponse(200, json: heartbeatResponseJSON(session: nil))
+        }
+
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
+
+        // 心跳确认 capturing → 采集开启（URLProtocol 注册并生效）。
+        waitUntil { TrafficCaptureController.shared.isCapturing }
+
+        // 会话结束 → 采集关闭。
+        serverHasSession.value = false
+        waitUntil { !TrafficCaptureController.shared.isCapturing }
+    }
+
+    /// stop 连接层 → 采集停止。
+    func testStop_StopsTrafficCapture() {
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/devices/register") == true {
+                return jsonResponse(200, json: registerResponseJSON(app: "com.test.app", did: "any"))
+            }
+            return jsonResponse(200, json: heartbeatResponseJSON(session: sessionJSON(id: "sess-1")))
+        }
+
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
+        waitUntil { TrafficCaptureController.shared.isCapturing }
+
+        controller.stop()
+        XCTAssertFalse(TrafficCaptureController.shared.isCapturing)
     }
 }
