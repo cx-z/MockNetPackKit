@@ -42,21 +42,93 @@ final class TrafficCaptureController: @unchecked Sendable {
     private var serverURLValue: URL?
     private var logHandler: (@Sendable (String) -> Void)?
 
-    /// App 注入的响应体解码器（M4）；由 MockNetPackKit.setBodyDecoder 设置，
-    /// URLProtocol 在组装真实响应时读取。独立小锁保护（设置低频、读取高频）。
+    /// 响应体解码槽位（M4 机制）：由 registerBinaryCodec（M6.1）安装 dispatch 闭包，
+    /// 测试可直接注入；URLProtocol 在组装真实响应时读取。独立小锁保护（设置低频、读取高频）。
     private let decoderLock = NSLock()
     private var bodyDecoderValue: MockNetPackKit.BodyDecoder?
     var bodyDecoder: MockNetPackKit.BodyDecoder? {
         get { decoderLock.lock(); defer { decoderLock.unlock() }; return bodyDecoderValue }
         set { decoderLock.lock(); bodyDecoderValue = newValue; decoderLock.unlock() }
     }
-    /// App 注入的响应体编码器（M5）；由 MockNetPackKit.setBodyEncoder 设置，
+    /// 响应体编码槽位（M5 机制）：由 registerBinaryCodec（M6.1）安装 dispatch 闭包，
     /// URLProtocol 在回放编辑过的文本回包时调用，把文本重新编码回二进制协议字节。
     /// 与 bodyDecoder 共用同一把小锁。
     private var bodyEncoderValue: MockNetPackKit.BodyEncoder?
     var bodyEncoder: MockNetPackKit.BodyEncoder? {
         get { decoderLock.lock(); defer { decoderLock.unlock() }; return bodyEncoderValue }
         set { decoderLock.lock(); bodyEncoderValue = newValue; decoderLock.unlock() }
+    }
+
+    // MARK: - 二进制协议编解码器（M6.1）
+
+    /// 一次 registerBinaryCodec 注册的 codec。加解密由业务方闭包提供；
+    /// contentType 匹配 / gzip 压缩 / UTF-8 转换由 SDK 完成。
+    private struct BinaryCodecRegistration {
+        let key: String
+        let compression: MockNetPackKit.BinaryCompression
+        let encrypt: @Sendable (Data) -> Data?
+        let decrypt: @Sendable (Data) -> Data?
+    }
+
+    /// 已注册 codec 列表（注册顺序 = 匹配优先级，首个命中生效）。
+    /// 与 bodyDecoder/bodyEncoder 共用 decoderLock。
+    private var codecsValue: [BinaryCodecRegistration] = []
+
+    /// 注册 codec（M6.1）：追加到列表并安装 dispatch 闭包到 bodyDecoder/bodyEncoder 槽位。
+    /// - 展示链路（decrypt）：真实密文 → 业务解密 → SDK 转 UTF-8 文本；
+    /// - 回放链路（encrypt）：编辑文本 → SDK 转 UTF-8 → gzip 压缩（.gzip）→ 业务加密。
+    func registerBinaryCodec(
+        for key: String,
+        compression: MockNetPackKit.BinaryCompression,
+        encrypt: @escaping @Sendable (Data) -> Data?,
+        decrypt: @escaping @Sendable (Data) -> Data?
+    ) {
+        guard !key.isEmpty else { return }
+        decoderLock.lock()
+        codecsValue.append(BinaryCodecRegistration(
+            key: key, compression: compression, encrypt: encrypt, decrypt: decrypt))
+        installCodecDispatchLocked()
+        decoderLock.unlock()
+    }
+
+    /// 测试辅助：清空已注册 codec 与 dispatch 槽位。
+    func resetBinaryCodecs() {
+        decoderLock.lock()
+        codecsValue = []
+        bodyDecoderValue = nil
+        bodyEncoderValue = nil
+        decoderLock.unlock()
+    }
+
+    /// 按注册顺序取首个 contentType（大小写不敏感）包含 key 的 codec。
+    private func matchingCodec(for contentType: String?) -> BinaryCodecRegistration? {
+        let lower = contentType?.lowercased()
+        decoderLock.lock()
+        defer { decoderLock.unlock() }
+        guard let lower else { return nil }
+        return codecsValue.first { lower.contains($0.key.lowercased()) }
+    }
+
+    /// 把 dispatch 闭包安装到 bodyDecoder/bodyEncoder 槽位（调用方须已持有 decoderLock）。
+    private func installCodecDispatchLocked() {
+        bodyDecoderValue = { [weak self] data, contentType in
+            guard let codec = self?.matchingCodec(for: contentType) else { return nil }
+            guard let plain = codec.decrypt(data) else { return nil }
+            return String(data: plain, encoding: .utf8)
+        }
+        bodyEncoderValue = { [weak self] text, contentType in
+            guard let codec = self?.matchingCodec(for: contentType) else { return nil }
+            guard let raw = text.data(using: .utf8) else { return nil }
+            let payload: Data
+            switch codec.compression {
+            case .none:
+                payload = raw
+            case .gzip:
+                guard let gz = raw.gzipCompressed() else { return nil }
+                payload = gz
+            }
+            return codec.encrypt(payload)
+        }
     }
     private var pending: [TrafficEntry] = []
     private var pendingBytes = 0
