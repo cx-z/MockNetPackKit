@@ -58,6 +58,14 @@ final class TrafficCaptureController: @unchecked Sendable {
         get { decoderLock.lock(); defer { decoderLock.unlock() }; return bodyEncoderValue }
         set { decoderLock.lock(); bodyEncoderValue = newValue; decoderLock.unlock() }
     }
+    /// 请求体专用解码槽位（M8.1）：业务请求体与响应体编码不对称时（如请求体仅 AES、
+    /// 响应体 gzip+AES），由 registerBinaryCodec 的 requestDecrypt 闭包安装；
+    /// 未注册时为 nil，请求体不解码、回退 `[binary N bytes]` 占位。
+    private var requestBodyDecoderValue: MockNetPackKit.BodyDecoder?
+    var requestBodyDecoder: MockNetPackKit.BodyDecoder? {
+        get { decoderLock.lock(); defer { decoderLock.unlock() }; return requestBodyDecoderValue }
+        set { decoderLock.lock(); requestBodyDecoderValue = newValue; decoderLock.unlock() }
+    }
 
     // MARK: - 二进制协议编解码器（M6.1）
 
@@ -68,6 +76,8 @@ final class TrafficCaptureController: @unchecked Sendable {
         let compression: MockNetPackKit.BinaryCompression
         let encrypt: @Sendable (Data) -> Data?
         let decrypt: @Sendable (Data) -> Data?
+        /// 请求体专用解密闭包（可选；nil = 请求体不解码）。
+        let requestDecrypt: (@Sendable (Data) -> Data?)?
     }
 
     /// 已注册 codec 列表（注册顺序 = 匹配优先级，首个命中生效）。
@@ -81,12 +91,14 @@ final class TrafficCaptureController: @unchecked Sendable {
         for key: String,
         compression: MockNetPackKit.BinaryCompression,
         encrypt: @escaping @Sendable (Data) -> Data?,
-        decrypt: @escaping @Sendable (Data) -> Data?
+        decrypt: @escaping @Sendable (Data) -> Data?,
+        requestDecrypt: (@Sendable (Data) -> Data?)? = nil
     ) {
         guard !key.isEmpty else { return }
         decoderLock.lock()
         codecsValue.append(BinaryCodecRegistration(
-            key: key, compression: compression, encrypt: encrypt, decrypt: decrypt))
+            key: key, compression: compression,
+            encrypt: encrypt, decrypt: decrypt, requestDecrypt: requestDecrypt))
         installCodecDispatchLocked()
         decoderLock.unlock()
     }
@@ -97,6 +109,7 @@ final class TrafficCaptureController: @unchecked Sendable {
         codecsValue = []
         bodyDecoderValue = nil
         bodyEncoderValue = nil
+        requestBodyDecoderValue = nil
         decoderLock.unlock()
     }
 
@@ -118,6 +131,16 @@ final class TrafficCaptureController: @unchecked Sendable {
             // 解码失败守卫：部分业务底层解码器（如 zlib ungzip）失败时不返回 nil，
             // 而返回错误描述文本（如 "ZYZLIB_Z_MEM_ERROR or Z_DATA_ERROR"）。识别 zlib
             // 错误宏名特征，避免把错误描述当作业务明文展示。
+            guard !Self.isDecoderErrorText(text) else { return nil }
+            return text
+        }
+        // 请求体专用解码槽位：仅当某 codec 注册了 requestDecrypt 时才启用；
+        // 未注册的 codec 整体不命中（nil），请求体不解码、回退占位。
+        requestBodyDecoderValue = { [weak self] data, contentType in
+            guard let codec = self?.matchingCodec(for: contentType),
+                  let requestDecrypt = codec.requestDecrypt else { return nil }
+            guard let plain = requestDecrypt(data) else { return nil }
+            guard let text = String(data: plain, encoding: .utf8) else { return nil }
             guard !Self.isDecoderErrorText(text) else { return nil }
             return text
         }

@@ -140,7 +140,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             requestHeaders: reqHeaders,
             requestBody: reqParts.text,
             requestBodyBase64: reqParts.base64,
-            requestBodyDecoded: Self.decodedBody(reqBodyData, contentType: request.value(forHTTPHeaderField: "Content-Type")),
+            requestBodyDecoded: Self.decodedBody(reqBodyData, contentType: request.value(forHTTPHeaderField: "Content-Type"), isRequest: true),
             statusCode: mock.statusCode,
             responseHeaders: headerFields.mapValues { [$0] },
             responseBody: mock.body,
@@ -204,7 +204,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         }
         // M8.1：请求体同样经解码器解出可读文本（仅展示；失败/无解码器则 nil）。
         if let bodyData, !bodyData.isEmpty {
-            entry.requestBodyDecoded = Self.decodedBody(bodyData, contentType: request.value(forHTTPHeaderField: "Content-Type"))
+            entry.requestBodyDecoded = Self.decodedBody(bodyData, contentType: request.value(forHTTPHeaderField: "Content-Type"), isRequest: true)
         }
         TrafficCaptureController.shared.record(entry)
     }
@@ -255,11 +255,16 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     /// 用 App 注入的解码器把二进制 body（如 xcp AES+gzip）解成可读 UTF-8 文本
-    /// （M4 响应体 / M8.1 请求体共用；仅展示）。失败或未注册解码器返回 nil。
+    /// （M4 响应体 / M8.1 请求体；仅展示）。失败或未注册解码器返回 nil。
     /// 解码用与 base64 相同的截断样本（1MB 上限），入参可为未截断原始数据。
-    static func decodedBody(_ data: Data?, contentType: String?) -> String? {
-        guard let data, !data.isEmpty,
-              let decoder = TrafficCaptureController.shared.bodyDecoder else { return nil }
+    /// - Parameter isRequest: true 走请求体专用解码槽位（业务请求体/响应体编码不对称时
+    ///   由 registerBinaryCodec 的 requestDecrypt 单独提供）；false 走响应体解码槽位。
+    static func decodedBody(_ data: Data?, contentType: String?, isRequest: Bool = false) -> String? {
+        guard let data, !data.isEmpty else { return nil }
+        let decoder = isRequest
+            ? TrafficCaptureController.shared.requestBodyDecoder
+            : TrafficCaptureController.shared.bodyDecoder
+        guard let decoder else { return nil }
         let sample = data.count > bodyLimit ? Data(data.prefix(bodyLimit)) : data
         return decoder(sample, contentType)
     }

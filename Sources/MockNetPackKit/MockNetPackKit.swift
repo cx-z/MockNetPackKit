@@ -53,18 +53,24 @@ public enum MockNetPackKit {
     ///   - contentTypeKey: contentType 匹配键，例如 "xcp"。
     ///   - compression: 压缩方式（SDK 在 encrypt 前执行）。
     ///   - encrypt: 业务加密闭包，入参为 SDK 压缩后的字节，返回密文（nil 表示失败）。
-    ///   - decrypt: 业务解密闭包，入参为原始密文，返回明文（nil 表示失败）。
+    ///   - decrypt: 业务响应体解密闭包，入参为原始密文，返回明文（nil 表示失败）。
+    ///   - requestDecrypt: 业务请求体专用解密闭包（可选）。不同 App 的请求体/响应体
+    ///     编码可能不对称（如响应体 gzip+AES、请求体仅 AES）；请求体与响应体编码
+    ///     不对称时传此闭包单独解请求体。传 nil（默认）表示请求体不解码
+    ///     （回退 `[binary N bytes]` 占位）——兼容只注册单解码器的旧接入。
     public static func registerBinaryCodec(
         for contentTypeKey: String,
         compression: BinaryCompression,
         encrypt: @escaping @Sendable (Data) -> Data?,
-        decrypt: @escaping @Sendable (Data) -> Data?
+        decrypt: @escaping @Sendable (Data) -> Data?,
+        requestDecrypt: (@Sendable (Data) -> Data?)? = nil
     ) {
         TrafficCaptureController.shared.registerBinaryCodec(
             for: contentTypeKey,
             compression: compression,
             encrypt: encrypt,
-            decrypt: decrypt
+            decrypt: decrypt,
+            requestDecrypt: requestDecrypt
         )
     }
 
