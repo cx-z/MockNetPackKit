@@ -8,7 +8,7 @@ import Foundation
 public enum MockNetPackKit {
 
     /// SDK 版本号。
-    public static let version = "0.2.0-m7"
+    public static let version = "0.2.0-m8"
 
     /// 响应体协议解码器（M4）：把私有二进制协议字节（如 xcp AES+gzip）解成可读
     /// UTF-8 文本，仅用于 Web 展示。M6.1 起为内部机制，由 registerBinaryCodec
