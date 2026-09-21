@@ -10,33 +10,62 @@ public enum MockNetPackKit {
     /// SDK 版本号。
     public static let version = "0.2.0-m5"
 
-    /// 响应体协议解码器（M4）：由业务 App 注入，把私有二进制协议字节
-    /// （如 xcp AES+gzip）解成可读 UTF-8 文本，仅用于 Web 展示；原始字节的
-    /// base64 仍单独保留用于回放。返回 nil 表示解不出（回退 `[binary N bytes]`）。
+    /// 响应体协议解码器（M4）：把私有二进制协议字节（如 xcp AES+gzip）解成可读
+    /// UTF-8 文本，仅用于 Web 展示。M6.1 起为内部机制，由 registerBinaryCodec
+    /// 安装 dispatch 闭包；测试可直接注入。返回 nil 表示解不出（回退 `[binary N bytes]`）。
     /// - Parameters:
     ///   - data: 响应体原始字节（未截断的完整数据，调用方负责控制体积）。
     ///   - contentType: 响应 Content-Type 头，可用于判断是否需要解码。
-    public typealias BodyDecoder = @Sendable (_ data: Data, _ contentType: String?) -> String?
+    typealias BodyDecoder = @Sendable (_ data: Data, _ contentType: String?) -> String?
 
     /// 响应体协议编码器（M5）：与 BodyDecoder 对称，把 Web 上编辑过的可读
-    ///  UTF-8 文本重新编码回私有二进制协议字节（如 xcp 的 gzip+AES），用于 Mock
-    ///  回放。返回 nil 表示编不了（SDK 回退到 bodyBase64 原始字节或 UTF-8 文本）。
+    /// UTF-8 文本重新编码回私有二进制协议字节（如 xcp 的 gzip+AES），用于 Mock
+    /// 回放。M6.1 起为内部机制，由 registerBinaryCodec 安装 dispatch 闭包。
+    /// 返回 nil 表示编不了（SDK 回退到 bodyBase64 原始字节或 UTF-8 文本）。
     /// - Parameters:
     ///   - text: Web 编辑后的完整回包文本（已解码格式，通常是 JSON）。
     ///   - contentType: 响应 Content-Type 头，可用于判断是否需要编码。
-    public typealias BodyEncoder = @Sendable (_ text: String, _ contentType: String?) -> Data?
+    typealias BodyEncoder = @Sendable (_ text: String, _ contentType: String?) -> Data?
 
-    /// 注入响应体协议解码器（M4）。nil 表示移除解码器。在后台线程调用，
-    /// 失败/未就绪时返回 nil，SDK 回退到 `[binary N bytes]` 占位。
-    public static func setBodyDecoder(_ decoder: BodyDecoder?) {
-        TrafficCaptureController.shared.bodyDecoder = decoder
+    /// 二进制协议压缩方式（M6.1）。当前仅标准 gzip 有实际使用场景；
+    /// `.none` 表示不压缩（仅 UTF-8 转换 + 业务加解密）。
+    public enum BinaryCompression: Sendable {
+        /// 不压缩。
+        case none
+        /// 标准 gzip（1f 8b 头），由 SDK 内置 zlib 产出。
+        case gzip
     }
 
-    /// 注入响应体协议编码器（M5）。nil 表示未配置——SDK 回放时对编辑过的文本
-    /// 回包回退到 UTF-8 直传（仅适用于纯文本接口；二进制接口需业务方注入编码器
-    /// 才能正确回放编辑后的内容）。
-    public static func setBodyEncoder(_ encoder: BodyEncoder?) {
-        TrafficCaptureController.shared.bodyEncoder = encoder
+    /// 注册一个二进制协议编解码器（M6.1）。一次注册同时接管两条链路：
+    /// - `decrypt`（解析抓到的包，展示链路）：真实响应的二进制密文 → 业务 AES 解密
+    ///   → 明文（可转 UTF-8 的字节）；SDK 负责按 contentType 匹配并把结果转成可读文本。
+    /// - `encrypt`（修改 mock 的数据，回放链路）：Web 编辑后的文本 → SDK 转 UTF-8 →
+    ///   按 compression 压缩 → 业务 AES 加密 → 密文字节用于 Mock 回包。
+    ///
+    /// 压缩语义（已定）：gzip 压缩由 SDK 完成（产出标准 1f 8b）；gzip 解压由业务方
+    /// 在 `decrypt` 闭包内完成（如 IntegratingApp 的 `decodeAes(data, ungzip: true)`）。
+    ///
+    /// 匹配：按注册顺序，contentType（大小写不敏感）包含 `contentTypeKey` 即命中，
+    /// 首个命中生效；未命中返回 nil，SDK 走既有 fallback（bodyBase64 → UTF-8）。
+    /// 可注册多个 codec（不同 contentTypeKey）。
+    ///
+    /// - Parameters:
+    ///   - contentTypeKey: contentType 匹配键，例如 "xcp"。
+    ///   - compression: 压缩方式（SDK 在 encrypt 前执行）。
+    ///   - encrypt: 业务加密闭包，入参为 SDK 压缩后的字节，返回密文（nil 表示失败）。
+    ///   - decrypt: 业务解密闭包，入参为原始密文，返回明文（nil 表示失败）。
+    public static func registerBinaryCodec(
+        for contentTypeKey: String,
+        compression: BinaryCompression,
+        encrypt: @escaping @Sendable (Data) -> Data?,
+        decrypt: @escaping @Sendable (Data) -> Data?
+    ) {
+        TrafficCaptureController.shared.registerBinaryCodec(
+            for: contentTypeKey,
+            compression: compression,
+            encrypt: encrypt,
+            decrypt: decrypt
+        )
     }
 
     /// 启动连接层：生成/读取 did → 注册设备 → 周期心跳 → 会话状态推导。
