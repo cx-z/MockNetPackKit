@@ -74,8 +74,8 @@ final class TrafficCaptureController: @unchecked Sendable {
     private struct BinaryCodecRegistration {
         let key: String
         let compression: MockNetPackKit.BinaryCompression
-        let encrypt: @Sendable (Data) -> Data?
-        let decrypt: @Sendable (Data) -> Data?
+        let responseEncrypt: @Sendable (Data) -> Data?
+        let responseDecrypt: @Sendable (Data) -> Data?
         /// 请求体专用解密闭包（可选；nil = 请求体不解码）。
         let requestDecrypt: (@Sendable (Data) -> Data?)?
     }
@@ -90,15 +90,15 @@ final class TrafficCaptureController: @unchecked Sendable {
     func registerBinaryCodec(
         for key: String,
         compression: MockNetPackKit.BinaryCompression,
-        encrypt: @escaping @Sendable (Data) -> Data?,
-        decrypt: @escaping @Sendable (Data) -> Data?,
+        responseEncrypt: @escaping @Sendable (Data) -> Data?,
+        responseDecrypt: @escaping @Sendable (Data) -> Data?,
         requestDecrypt: (@Sendable (Data) -> Data?)? = nil
     ) {
         guard !key.isEmpty else { return }
         decoderLock.lock()
         codecsValue.append(BinaryCodecRegistration(
             key: key, compression: compression,
-            encrypt: encrypt, decrypt: decrypt, requestDecrypt: requestDecrypt))
+            responseEncrypt: responseEncrypt, responseDecrypt: responseDecrypt, requestDecrypt: requestDecrypt))
         installCodecDispatchLocked()
         decoderLock.unlock()
     }
@@ -126,7 +126,7 @@ final class TrafficCaptureController: @unchecked Sendable {
     private func installCodecDispatchLocked() {
         bodyDecoderValue = { [weak self] data, contentType in
             guard let codec = self?.matchingCodec(for: contentType) else { return nil }
-            guard let plain = codec.decrypt(data) else { return nil }
+            guard let plain = codec.responseDecrypt(data) else { return nil }
             guard let text = String(data: plain, encoding: .utf8) else { return nil }
             // 解码失败守卫：部分业务底层解码器（如 zlib ungzip）失败时不返回 nil，
             // 而返回错误描述文本（如 "ZYZLIB_Z_MEM_ERROR or Z_DATA_ERROR"）。识别 zlib
@@ -155,7 +155,7 @@ final class TrafficCaptureController: @unchecked Sendable {
                 guard let gz = raw.gzipCompressed() else { return nil }
                 payload = gz
             }
-            return codec.encrypt(payload)
+            return codec.responseEncrypt(payload)
         }
     }
 

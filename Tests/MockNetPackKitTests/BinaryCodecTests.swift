@@ -53,8 +53,8 @@ final class BinaryCodecTests: XCTestCase {
         MockNetPackKit.registerBinaryCodec(
             for: "xcp",
             compression: .gzip,
-            encrypt: { data in captured.value = data; return data },
-            decrypt: { $0 }
+            responseEncrypt: { data in captured.value = data; return data },
+            responseDecrypt: { $0 }
         )
         let text = #"{"name":"沈淮行"}"#
         let encoded = TrafficCaptureController.shared.bodyEncoder?(text, "application/x-xcp")
@@ -72,8 +72,8 @@ final class BinaryCodecTests: XCTestCase {
         MockNetPackKit.registerBinaryCodec(
             for: "xcp",
             compression: .none,
-            encrypt: { data in captured.value = data; return data },
-            decrypt: { $0 }
+            responseEncrypt: { data in captured.value = data; return data },
+            responseDecrypt: { $0 }
         )
         let text = #"{"plain":true}"#
         let encoded = TrafficCaptureController.shared.bodyEncoder?(text, "application/x-xcp")
@@ -88,8 +88,8 @@ final class BinaryCodecTests: XCTestCase {
         MockNetPackKit.registerBinaryCodec(
             for: "xcp",
             compression: .gzip,
-            encrypt: { $0 },
-            decrypt: { gunzip($0) }
+            responseEncrypt: { $0 },
+            responseDecrypt: { gunzip($0) }
         )
         let text = #"{"user":"张三","age":18}"#
         let gz = Data(text.utf8).gzipCompressed()!
@@ -104,8 +104,8 @@ final class BinaryCodecTests: XCTestCase {
         MockNetPackKit.registerBinaryCodec(
             for: "xcp",
             compression: .none,
-            encrypt: { $0 },
-            decrypt: { $0 }
+            responseEncrypt: { $0 },
+            responseDecrypt: { $0 }
         )
         XCTAssertEqual(TrafficCaptureController.shared.bodyEncoder?("t", "Application/X-XCP"), Data("t".utf8))
         XCTAssertNil(TrafficCaptureController.shared.bodyEncoder?("t", "application/json"))
@@ -118,14 +118,14 @@ final class BinaryCodecTests: XCTestCase {
         MockNetPackKit.registerBinaryCodec(
             for: "xcp",
             compression: .none,
-            encrypt: { Data("1:".utf8) + $0 },
-            decrypt: { $0 }
+            responseEncrypt: { Data("1:".utf8) + $0 },
+            responseDecrypt: { $0 }
         )
         MockNetPackKit.registerBinaryCodec(
             for: "xbin",
             compression: .none,
-            encrypt: { Data("2:".utf8) + $0 },
-            decrypt: { $0 }
+            responseEncrypt: { Data("2:".utf8) + $0 },
+            responseDecrypt: { $0 }
         )
         XCTAssertEqual(TrafficCaptureController.shared.bodyEncoder?("t", "application/xcp"), Data("1:t".utf8))
         XCTAssertEqual(TrafficCaptureController.shared.bodyEncoder?("t", "application/xbin"), Data("2:t".utf8))
@@ -141,8 +141,8 @@ final class BinaryCodecTests: XCTestCase {
         MockNetPackKit.registerBinaryCodec(
             for: "xcp",
             compression: .gzip,
-            encrypt: { $0 },
-            decrypt: { _ in nil }
+            responseEncrypt: { $0 },
+            responseDecrypt: { _ in nil }
         )
         XCTAssertNil(TrafficCaptureController.shared.bodyDecoder?(Data([0x01, 0x02]), "application/x-xcp"))
     }
@@ -152,8 +152,8 @@ final class BinaryCodecTests: XCTestCase {
         MockNetPackKit.registerBinaryCodec(
             for: "xcp",
             compression: .none,
-            encrypt: { $0 },
-            decrypt: { $0 }
+            responseEncrypt: { $0 },
+            responseDecrypt: { $0 }
         )
         XCTAssertNotNil(TrafficCaptureController.shared.bodyEncoder)
         TrafficCaptureController.shared.resetBinaryCodecs()
@@ -173,8 +173,8 @@ final class BinaryCodecTests: XCTestCase {
         MockNetPackKit.registerBinaryCodec(
             for: "xcp",
             compression: .gzip,
-            encrypt: { data in captured.value = data; return data },
-            decrypt: { $0 }
+            responseEncrypt: { data in captured.value = data; return data },
+            responseDecrypt: { $0 }
         )
         let text = #"{"name":"编辑后的回包"}"#
         MockRuleController.shared.applyForTesting(rules: [MockRule(
@@ -224,8 +224,8 @@ final class BinaryCodecTests: XCTestCase {
         MockNetPackKit.registerBinaryCodec(
             for: "xcp",
             compression: .gzip,
-            encrypt: { data in encryptCalled.value = true; return data },
-            decrypt: { $0 }
+            responseEncrypt: { data in encryptCalled.value = true; return data },
+            responseDecrypt: { $0 }
         )
         MockRuleController.shared.applyForTesting(rules: [MockRule(
             id: "r-raw", method: "POST", path: "/api/xcp-raw",
