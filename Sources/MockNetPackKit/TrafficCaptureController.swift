@@ -114,7 +114,12 @@ final class TrafficCaptureController: @unchecked Sendable {
         bodyDecoderValue = { [weak self] data, contentType in
             guard let codec = self?.matchingCodec(for: contentType) else { return nil }
             guard let plain = codec.decrypt(data) else { return nil }
-            return String(data: plain, encoding: .utf8)
+            guard let text = String(data: plain, encoding: .utf8) else { return nil }
+            // 解码失败守卫：部分业务底层解码器（如 zlib ungzip）失败时不返回 nil，
+            // 而返回错误描述文本（如 "ZYZLIB_Z_MEM_ERROR or Z_DATA_ERROR"）。识别 zlib
+            // 错误宏名特征，避免把错误描述当作业务明文展示。
+            guard !Self.isDecoderErrorText(text) else { return nil }
+            return text
         }
         bodyEncoderValue = { [weak self] text, contentType in
             guard let codec = self?.matchingCodec(for: contentType) else { return nil }
@@ -129,6 +134,16 @@ final class TrafficCaptureController: @unchecked Sendable {
             }
             return codec.encrypt(payload)
         }
+    }
+
+    /// 识别解码器失败时业务底层常返回的错误描述文本（zlib 错误宏名）。
+    /// 业务明文 JSON 不会以这些宏名开头/包含它们，故用作失败兜底不影响正常展示。
+    static func isDecoderErrorText(_ text: String) -> Bool {
+        let markers = [
+            "Z_DATA_ERROR", "Z_MEM_ERROR", "Z_BUF_ERROR",
+            "Z_STREAM_ERROR", "Z_VERSION_ERROR", "Z_ERRNO", "Z_NEED_DICT",
+        ]
+        return markers.contains(where: { text.contains($0) })
     }
     private var pending: [TrafficEntry] = []
     private var pendingBytes = 0
