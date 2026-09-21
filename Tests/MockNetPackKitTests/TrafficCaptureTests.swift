@@ -343,8 +343,8 @@ final class TrafficCaptureTests: XCTestCase {
         let controller = TrafficCaptureController.shared
         controller.registerBinaryCodec(
             for: "xcp", compression: .gzip,
-            encrypt: { $0 },
-            decrypt: { _ in Data(#"{"resp":true}"#.utf8) },
+            responseEncrypt: { $0 },
+            responseDecrypt: { _ in Data(#"{"resp":true}"#.utf8) },
             requestDecrypt: { _ in Data(#"{"cmd":"login"}"#.utf8) })
         defer { controller.resetBinaryCodecs() }
         controller.start(serverURL: serverURL, appID: appID, did: did)
@@ -394,8 +394,8 @@ final class TrafficCaptureTests: XCTestCase {
         let controller = TrafficCaptureController.shared
         controller.registerBinaryCodec(
             for: "xcp", compression: .gzip,
-            encrypt: { $0 },
-            decrypt: { _ in Data(#"{"resp":true}"#.utf8) },
+            responseEncrypt: { $0 },
+            responseDecrypt: { _ in Data(#"{"resp":true}"#.utf8) },
             requestDecrypt: { _ in Data(#"{"cmd":"feed"}"#.utf8) })
         defer { controller.resetBinaryCodecs() }
         controller.start(serverURL: serverURL, appID: appID, did: did)
@@ -462,8 +462,8 @@ final class TrafficCaptureTests: XCTestCase {
         let controller = TrafficCaptureController.shared
         controller.registerBinaryCodec(
             for: "xcp", compression: .gzip,
-            encrypt: { $0 },
-            decrypt: { _ in Data(#"{"ok":true}"#.utf8) },
+            responseEncrypt: { $0 },
+            responseDecrypt: { _ in Data(#"{"ok":true}"#.utf8) },
             requestDecrypt: { _ in Data("ZYZLIB_Z_MEM_ERROR or Z_DATA_ERROR".utf8) })
         defer { controller.resetBinaryCodecs() }
         controller.start(serverURL: serverURL, appID: appID, did: did)
@@ -513,8 +513,8 @@ final class TrafficCaptureTests: XCTestCase {
         let controller = TrafficCaptureController.shared
         controller.registerBinaryCodec(
             for: "xcp", compression: .gzip,
-            encrypt: { $0 },
-            decrypt: { _ in Data(#"{"resp":true}"#.utf8) })
+            responseEncrypt: { $0 },
+            responseDecrypt: { _ in Data(#"{"resp":true}"#.utf8) })
         defer { controller.resetBinaryCodecs() }
         controller.start(serverURL: serverURL, appID: appID, did: did)
         controller.updateSession(capturing: true, sessionID: "sess-1")
