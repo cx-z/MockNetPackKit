@@ -42,7 +42,7 @@ final class ConnectionController: @unchecked Sendable {
     private var didValue: String?
     private var logHandler: (@Sendable (String) -> Void)?
 
-    private var serverConfig = ServerConfig(heartbeatIntervalSeconds: 20, heartbeatTimeoutSeconds: 60)
+    private var serverConfig = ServerConfig(heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 60)
     private var registered = false
     /// M7.2.3: 设备未在 Web 注册（register/heartbeat 404）→ 静默停循环，不再重试。
     private var unregistered = false
@@ -78,7 +78,7 @@ final class ConnectionController: @unchecked Sendable {
         // M7.2.4: 业务方传入 did（如 IntegratingApp Keychain deviceID）则直接用；否则 SDK 自行生成。
         didValue = externalDID ?? DIDStore.did(forApp: appID ?? "")
         self.logHandler = logHandler
-        serverConfig = ServerConfig(heartbeatIntervalSeconds: 20, heartbeatTimeoutSeconds: 60)
+        serverConfig = ServerConfig(heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 60)
         registered = false
         unregistered = false
         currentBackoff = backoffBase
