@@ -66,6 +66,12 @@ final class TrafficCaptureController: @unchecked Sendable {
         get { decoderLock.lock(); defer { decoderLock.unlock() }; return requestBodyDecoderValue }
         set { decoderLock.lock(); requestBodyDecoderValue = newValue; decoderLock.unlock() }
     }
+    /// 请求体专用编码槽位（预留，当前无调用点）：请求体回放/改写场景使用。
+    private var requestBodyEncoderValue: MockNetPackKit.BodyEncoder?
+    var requestBodyEncoder: MockNetPackKit.BodyEncoder? {
+        get { decoderLock.lock(); defer { decoderLock.unlock() }; return requestBodyEncoderValue }
+        set { decoderLock.lock(); requestBodyEncoderValue = newValue; decoderLock.unlock() }
+    }
 
     // MARK: - 二进制协议编解码器（M6.1）
 
@@ -76,6 +82,8 @@ final class TrafficCaptureController: @unchecked Sendable {
         let compression: MockNetPackKit.BinaryCompression
         let responseEncrypt: @Sendable (Data) -> Data?
         let responseDecrypt: @Sendable (Data) -> Data?
+        /// 请求体业务加密闭包（可选；请求体回放/改写预留，当前无调用点）。
+        let requestEncrypt: (@Sendable (Data) -> Data?)?
         /// 请求体专用解密闭包（可选；nil = 请求体不解码）。
         let requestDecrypt: (@Sendable (Data) -> Data?)?
     }
@@ -92,13 +100,15 @@ final class TrafficCaptureController: @unchecked Sendable {
         compression: MockNetPackKit.BinaryCompression,
         responseEncrypt: @escaping @Sendable (Data) -> Data?,
         responseDecrypt: @escaping @Sendable (Data) -> Data?,
+        requestEncrypt: (@Sendable (Data) -> Data?)? = nil,
         requestDecrypt: (@Sendable (Data) -> Data?)? = nil
     ) {
         guard !key.isEmpty else { return }
         decoderLock.lock()
         codecsValue.append(BinaryCodecRegistration(
             key: key, compression: compression,
-            responseEncrypt: responseEncrypt, responseDecrypt: responseDecrypt, requestDecrypt: requestDecrypt))
+            responseEncrypt: responseEncrypt, responseDecrypt: responseDecrypt,
+            requestEncrypt: requestEncrypt, requestDecrypt: requestDecrypt))
         installCodecDispatchLocked()
         decoderLock.unlock()
     }
@@ -110,6 +120,7 @@ final class TrafficCaptureController: @unchecked Sendable {
         bodyDecoderValue = nil
         bodyEncoderValue = nil
         requestBodyDecoderValue = nil
+        requestBodyEncoderValue = nil
         decoderLock.unlock()
     }
 
@@ -143,6 +154,13 @@ final class TrafficCaptureController: @unchecked Sendable {
             guard let text = String(data: plain, encoding: .utf8) else { return nil }
             guard !Self.isDecoderErrorText(text) else { return nil }
             return text
+        }
+        // 请求体专用编码槽位（预留）：仅当某 codec 注册了 requestEncrypt 时才启用。
+        requestBodyEncoderValue = { [weak self] text, contentType in
+            guard let codec = self?.matchingCodec(for: contentType),
+                  let requestEncrypt = codec.requestEncrypt else { return nil }
+            guard let raw = text.data(using: .utf8) else { return nil }
+            return requestEncrypt(raw)
         }
         bodyEncoderValue = { [weak self] text, contentType in
             guard let codec = self?.matchingCodec(for: contentType) else { return nil }
