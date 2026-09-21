@@ -344,7 +344,8 @@ final class TrafficCaptureTests: XCTestCase {
         controller.registerBinaryCodec(
             for: "xcp", compression: .gzip,
             encrypt: { $0 },
-            decrypt: { _ in Data(#"{"cmd":"login"}"#.utf8) })
+            decrypt: { _ in Data(#"{"resp":true}"#.utf8) },
+            requestDecrypt: { _ in Data(#"{"cmd":"login"}"#.utf8) })
         defer { controller.resetBinaryCodecs() }
         controller.start(serverURL: serverURL, appID: appID, did: did)
         controller.updateSession(capturing: true, sessionID: "sess-1")
@@ -394,7 +395,8 @@ final class TrafficCaptureTests: XCTestCase {
         controller.registerBinaryCodec(
             for: "xcp", compression: .gzip,
             encrypt: { $0 },
-            decrypt: { _ in Data(#"{"cmd":"feed"}"#.utf8) })
+            decrypt: { _ in Data(#"{"resp":true}"#.utf8) },
+            requestDecrypt: { _ in Data(#"{"cmd":"feed"}"#.utf8) })
         defer { controller.resetBinaryCodecs() }
         controller.start(serverURL: serverURL, appID: appID, did: did)
         controller.updateSession(capturing: true, sessionID: "sess-1")
@@ -461,7 +463,8 @@ final class TrafficCaptureTests: XCTestCase {
         controller.registerBinaryCodec(
             for: "xcp", compression: .gzip,
             encrypt: { $0 },
-            decrypt: { _ in Data("ZYZLIB_Z_MEM_ERROR or Z_DATA_ERROR".utf8) })
+            decrypt: { _ in Data(#"{"ok":true}"#.utf8) },
+            requestDecrypt: { _ in Data("ZYZLIB_Z_MEM_ERROR or Z_DATA_ERROR".utf8) })
         defer { controller.resetBinaryCodecs() }
         controller.start(serverURL: serverURL, appID: appID, did: did)
         controller.updateSession(capturing: true, sessionID: "sess-1")
@@ -499,6 +502,55 @@ final class TrafficCaptureTests: XCTestCase {
             return XCTFail("traffic upload not found")
         }
         // 错误描述文本被守卫拦截：requestBodyDecoded 缺失，requestBody 保持占位。
+        XCTAssertNil(entry["requestBodyDecoded"])
+        XCTAssertEqual(entry["requestBody"] as? String, "[binary 3 bytes]")
+    }
+
+    /// 兼容性（M8.1）：只注册 decrypt（响应体）、未传 requestDecrypt 时，
+    /// 请求体不解码（requestBodyDecoded 缺失），回退 `[binary]` 占位——兼容只注册
+    /// 单解码器的旧 App。
+    func testNoRequestDecryptFallsBackToPlaceholder() throws {
+        let controller = TrafficCaptureController.shared
+        controller.registerBinaryCodec(
+            for: "xcp", compression: .gzip,
+            encrypt: { $0 },
+            decrypt: { _ in Data(#"{"resp":true}"#.utf8) })
+        defer { controller.resetBinaryCodecs() }
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-1")
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/traffic") == true {
+                return jsonResponse(202, json: ["accepted": true, "count": 1])
+            }
+            return jsonResponse(200, json: ["ok": true])
+        }
+
+        let clientConfig = URLSessionConfiguration.ephemeral
+        clientConfig.protocolClasses = [MockNetPackURLProtocol.self]
+        let session = URLSession(configuration: clientConfig)
+        var req = URLRequest(url: URL(string: "https://api.example.com/v1/login")!)
+        req.httpMethod = "POST"
+        req.setValue("application/xcp", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data([0x00, 0xFF, 0x01])
+
+        let exp = expectation(description: "request completes")
+        session.dataTask(with: req) { _, _, _ in exp.fulfill() }.resume()
+        wait(for: [exp], timeout: 3)
+
+        controller.flush()
+        waitUntil {
+            MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true }
+        }
+        guard let upload = MockURLProtocol.recordedRequests.first(where: { $0.url?.path.hasSuffix("/traffic") == true }),
+              let body = bodyOfRequest(upload),
+              let entries = body["entries"] as? [[String: Any]],
+              let entry = entries.first else {
+            return XCTFail("traffic upload not found")
+        }
         XCTAssertNil(entry["requestBodyDecoded"])
         XCTAssertEqual(entry["requestBody"] as? String, "[binary 3 bytes]")
     }
