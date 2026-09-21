@@ -62,6 +62,7 @@ final class ConnectionController: @unchecked Sendable {
     /// 启动连接层（幂等：已在运行则直接返回）。did 首次生成后持久化。
     func start(server: URL,
                appID: String?,
+               externalDID: String? = nil,
                appVersion: String?,
                sdkVersion: String,
                osVersion: String,
@@ -74,7 +75,8 @@ final class ConnectionController: @unchecked Sendable {
         appVersionValue = appVersion
         sdkVersionValue = sdkVersion
         osVersionValue = osVersion
-        didValue = DIDStore.did(forApp: appID ?? "")
+        // M7.2.4: 业务方传入 did（如 IntegratingApp Keychain deviceID）则直接用；否则 SDK 自行生成。
+        didValue = externalDID ?? DIDStore.did(forApp: appID ?? "")
         self.logHandler = logHandler
         serverConfig = ServerConfig(heartbeatIntervalSeconds: 20, heartbeatTimeoutSeconds: 60)
         registered = false
@@ -262,6 +264,12 @@ final class ConnectionController: @unchecked Sendable {
             log("register 404: device not registered on server; SDK idle (register the device in Web)")
             finishCycle()
             // 不 scheduleNext。
+        } catch ConnectionClientError.httpStatus(let code) {
+            let backoff = advanceBackoff()
+            setConnectionState(.offline)
+            log("register httpStatus=\(code); retrying in \(Int(backoff))s")
+            finishCycle()
+            scheduleNext(delay: backoff)
         } catch {
             let backoff = advanceBackoff()
             setConnectionState(.offline)
