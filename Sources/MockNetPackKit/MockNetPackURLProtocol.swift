@@ -103,18 +103,21 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         let response = HTTPURLResponse(
             url: url, statusCode: mock.statusCode,
             httpVersion: "HTTP/1.1", headerFields: headerFields)
-        // M5 回放三级 fallback：
-        // ① body 有编辑过的文本 + encoder 可用 → 编码回私有二进制协议字节（Web 编辑生效）
-        // ② bodyBase64 有原始字节 → 按原始字节回放（未编辑的二进制规则）
+        // M7 回放三级 fallback（2026-09-21 调整顺序）：
+        // ① bodyBase64 有原始字节 → 按原始字节回放（未编辑的二进制规则，"Mock 此请求"直接启用）
+        // ② body 有编辑过的文本 + encoder 可用 → 编码回私有二进制协议字节（Web 编辑生效）
         // ③ 否则 → UTF-8 文本直传（纯文本 JSON 接口）
+        // 调整原因：未编辑二进制规则的 body 是 "[binary N bytes]" 占位文本（非空），
+        // 若 encoder 优先会把占位文本编码回放导致 App 解析失败；编辑保存时 Web 本就清除
+        // bodyBase64，因此原始字节优先不影响已编辑规则（它们已无 bodyBase64）。
         let contentType = headerFields["Content-Type"]
         let data: Data
-        if let text = mock.body, !text.isEmpty,
-           let encoder = TrafficCaptureController.shared.bodyEncoder,
-           let encoded = encoder(text, contentType) {
-            data = encoded
-        } else if let b64 = mock.bodyBase64, let decoded = Data(base64Encoded: b64), !decoded.isEmpty {
+        if let b64 = mock.bodyBase64, let decoded = Data(base64Encoded: b64), !decoded.isEmpty {
             data = decoded
+        } else if let text = mock.body, !text.isEmpty,
+                  let encoder = TrafficCaptureController.shared.bodyEncoder,
+                  let encoded = encoder(text, contentType) {
+            data = encoded
         } else {
             data = Data((mock.body ?? "").utf8)
         }
