@@ -147,7 +147,7 @@ final class ConnectionControllerTests: XCTestCase {
         waitUntil { self.controller.sessionState == .idle }
     }
 
-    func testHeartbeat404_ReRegisters() {
+    func testHeartbeat404_StopsQuietly() {
         let failNextHeartbeat = Box(true)
         MockURLProtocol.handler = { request in
             if request.url?.path.hasSuffix("/devices/register") == true {
@@ -163,10 +163,16 @@ final class ConnectionControllerTests: XCTestCase {
 
         controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
 
-        // 出现 404 后应自动重新注册（register 调用 ≥ 2），并恢复心跳。
-        // M3 fix：注册后首次心跳为固定 2s，两轮共约 4s，放宽到 6s。
-        waitUntil(timeout: 6) { self.registerCalls >= 2 && self.heartbeatCalls >= 2 }
-        waitUntil { self.controller.connectionState == .connected }
+        // 注册成功、心跳一次后 404 → M7.2.3：静默停循环，不再重新注册。
+        waitUntil(timeout: 3) { self.registerCalls >= 1 && self.heartbeatCalls >= 1 }
+        waitUntil { self.controller.connectionState == .offline }
+
+        // 等一会确认不再产生新的 register/heartbeat（不再重连循环）。
+        let frozenReg = registerCalls
+        let frozenHb = heartbeatCalls
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertEqual(registerCalls, frozenReg, "404 后不应再重新注册")
+        XCTAssertEqual(heartbeatCalls, frozenHb, "404 后不应再心跳")
     }
 
     func testNetworkFailure_BackoffReconnects() {

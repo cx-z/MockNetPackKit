@@ -8,7 +8,9 @@ import os
 ///   同一时刻至多一个注册/心跳在途（`inflight` 标志）。
 /// - 心跳间隔以服务端下发 `serverConfig.heartbeatIntervalSeconds` 为准
 ///   （钳制 5...300，默认 20；契约建议 15~20s），心跳失败按指数退避重试。
-/// - 心跳 404（device_not_registered）→ 自动重新注册后继续心跳。
+/// - 心跳 404（device_not_registered）→ M7.2.3 起 SDK 不再自动注册：
+///   设备必须先在 Web 手动注册。收到 404 后静默停循环（不弹窗、不重试），
+///   仅写一行技术日志；业务方重启 App 后若 Web 已注册则自动恢复。
 /// - 60s 超时语义由服务端判定（契约 §2）：SDK 恢复心跳后自然收到
 ///   `session=null`，无需自实现超时计时。
 /// - 本类不实现 Debug/Release 门（M0 责任边界：由业务方构建层保证）。
@@ -42,6 +44,8 @@ final class ConnectionController: @unchecked Sendable {
 
     private var serverConfig = ServerConfig(heartbeatIntervalSeconds: 20, heartbeatTimeoutSeconds: 60)
     private var registered = false
+    /// M7.2.3: 设备未在 Web 注册（register/heartbeat 404）→ 静默停循环，不再重试。
+    private var unregistered = false
     private var currentBackoff: TimeInterval = 1
     private var inflight = false
 
@@ -74,6 +78,7 @@ final class ConnectionController: @unchecked Sendable {
         self.logHandler = logHandler
         serverConfig = ServerConfig(heartbeatIntervalSeconds: 20, heartbeatTimeoutSeconds: 60)
         registered = false
+        unregistered = false
         currentBackoff = backoffBase
         lock.unlock()
 
@@ -144,7 +149,7 @@ final class ConnectionController: @unchecked Sendable {
     /// 若无在途任务则开启一轮注册/心跳。
     private func runIfIdle() {
         lock.lock()
-        guard isRunningValue, !inflight else { lock.unlock(); return }
+        guard isRunningValue, !inflight, !unregistered else { lock.unlock(); return }
         inflight = true
         lock.unlock()
 
@@ -199,12 +204,15 @@ final class ConnectionController: @unchecked Sendable {
         case .failure(let error):
             switch error {
             case ConnectionClientError.httpStatus(404):
-                // 服务端不认识该设备（服务端数据被清/重建）→ 重新注册。
-                withLock { registered = false }
+                // M7.2.3: 设备未在 Web 注册 → 静默停循环，不自动注册、不弹窗。
+                withLock {
+                    registered = false
+                    unregistered = true
+                }
                 setConnectionState(.offline)
-                log("heartbeat 404: device not registered; re-registering")
+                log("heartbeat 404: device not registered on server; SDK idle (register the device in Web)")
                 finishCycle()
-                scheduleNext(now: true)
+                // 不再 scheduleNext：设备需在 Web 注册后由用户重启 App 恢复。
 
             default:
                 // 网络错误 / 5xx / 解码失败 → 指数退避重连。
@@ -244,6 +252,16 @@ final class ConnectionController: @unchecked Sendable {
             // 注册后尽快做第一次心跳：让抓包会话状态与 Mock 规则快照在启动首屏
             // 请求发出前就位（M3 fix：原为等满一个心跳间隔，启动首屏漏 Mock）。
             scheduleNext(delay: 2)
+        } catch ConnectionClientError.httpStatus(404) {
+            // M7.2.3: 服务端拒绝注册（设备未在 Web 手动注册）→ 静默停循环。
+            withLock {
+                registered = false
+                unregistered = true
+            }
+            setConnectionState(.offline)
+            log("register 404: device not registered on server; SDK idle (register the device in Web)")
+            finishCycle()
+            // 不 scheduleNext。
         } catch {
             let backoff = advanceBackoff()
             setConnectionState(.offline)
