@@ -72,16 +72,21 @@ public enum MockNetPackKit {
     /// - Parameters:
     ///   - server: 服务器 base URL（形如 `http://host:4290/api/v1`）。
     ///   - appID: App 标识，默认取 Bundle ID；SDK 生成并持久化 did 的作用域。
+    ///   - did: 业务方提供的设备 ID（如 KK 的 Keychain deviceID）。传入后 SDK 不再
+    ///     自行生成 did，直接用它——保证 did 与调试页展示一致、Clean Build 不漂移。
+    ///     传 nil 则回退到 SDK 内部 DIDStore 生成。
     ///   - appVersion: App 版本，默认取 CFBundleShortVersionString。
     ///   - logHandler: 日志回调（可选；默认走 OSLog）。
     /// 幂等：已在运行则忽略。
     public static func start(server: URL,
                              appID: String? = nil,
+                             did: String? = nil,
                              appVersion: String? = nil,
                              logHandler: (@Sendable (String) -> Void)? = nil) {
         ConnectionController.shared.start(
             server: server,
             appID: appID ?? Self.bundleID,
+            externalDID: did,
             appVersion: appVersion ?? Self.bundleVersion,
             sdkVersion: version,
             osVersion: Self.osVersion,
