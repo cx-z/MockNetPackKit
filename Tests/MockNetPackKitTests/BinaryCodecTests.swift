@@ -212,6 +212,55 @@ final class BinaryCodecTests: XCTestCase {
         XCTAssertEqual(captured.value, served, "encrypt 闭包收到的应正是回放的 gzip 字节")
     }
 
+    /// 未编辑二进制规则（body 为占位文本 + bodyBase64 原始字节）：回放必须输出
+    /// 原始字节，encrypt 闭包不应被调用（M7 顺序调整，bodyBase64 优先于 encoder）。
+    func testEndToEndReplayServesRawBytesForUneditedBinaryRule() throws {
+        let controller = TrafficCaptureController.shared
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-codec-raw")
+
+        let rawBytes = Data([0x1f, 0x8b, 0x08, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07])
+        let encryptCalled = Box<Bool>(false)
+        MockNetPackKit.registerBinaryCodec(
+            for: "xcp",
+            compression: .gzip,
+            encrypt: { data in encryptCalled.value = true; return data },
+            decrypt: { $0 }
+        )
+        MockRuleController.shared.applyForTesting(rules: [MockRule(
+            id: "r-raw", method: "POST", path: "/api/xcp-raw",
+            response: MockResponse(statusCode: 200,
+                headers: ["Content-Type": "application/x-xcp"],
+                body: "[binary 11 bytes]",
+                bodyBase64: rawBytes.base64EncodedString()),
+            enabled: true, effective: true)], version: 1)
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/traffic") == true {
+                return jsonResponse(202, json: ["accepted": true, "count": 1])
+            }
+            XCTFail("命中 Mock 不应转发: \(request.url?.absoluteString ?? "")")
+            return jsonResponse(200, json: ["real": true])
+        }
+
+        var req = URLRequest(url: URL(string: "https://api.example.com/api/xcp-raw")!)
+        req.httpMethod = "POST"
+        let received = Box<Data?>(nil)
+        let exp = expectation(description: "codec raw mock")
+        businessSession().dataTask(with: req) { data, _, _ in
+            received.value = data
+            exp.fulfill()
+        }.resume()
+        wait(for: [exp], timeout: 3)
+
+        let served = try XCTUnwrap(received.value)
+        XCTAssertEqual(served, rawBytes, "未编辑二进制规则应回放原始字节")
+        XCTAssertFalse(encryptCalled.value, "未编辑规则不应触发 encoder")
+    }
+
     // MARK: - 辅助
 
     private final class Box<T>: @unchecked Sendable {
