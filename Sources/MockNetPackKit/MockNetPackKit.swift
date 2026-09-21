@@ -54,7 +54,9 @@ public enum MockNetPackKit {
     ///   - compression: 压缩方式（SDK 在 responseEncrypt 前执行）。
     ///   - responseEncrypt: 响应体业务加密闭包，入参为 SDK 压缩后的字节，返回密文（nil 表示失败）。
     ///   - responseDecrypt: 响应体业务解密闭包，入参为原始密文，返回明文（nil 表示失败）。
-    ///   - requestDecrypt: 请求体专用解密闭包（可选）。不同 App 的请求体/响应体
+    ///   - requestEncrypt: 请求体业务加密闭包（可选，预留）。请求体回放/改写场景使用；
+    ///     当前 Mock 不改写请求体，传 nil（默认）即可。
+    ///   - requestDecrypt: 请求体业务解密闭包（可选）。不同 App 的请求体/响应体
     ///     编码可能不对称（如响应体 gzip+AES、请求体仅 AES）；请求体与响应体编码
     ///     不对称时传此闭包单独解请求体。传 nil（默认）表示请求体不解码
     ///     （回退 `[binary N bytes]` 占位）——兼容只注册响应体编解码的旧接入。
@@ -63,6 +65,7 @@ public enum MockNetPackKit {
         compression: BinaryCompression,
         responseEncrypt: @escaping @Sendable (Data) -> Data?,
         responseDecrypt: @escaping @Sendable (Data) -> Data?,
+        requestEncrypt: (@Sendable (Data) -> Data?)? = nil,
         requestDecrypt: (@Sendable (Data) -> Data?)? = nil
     ) {
         TrafficCaptureController.shared.registerBinaryCodec(
@@ -70,6 +73,7 @@ public enum MockNetPackKit {
             compression: compression,
             responseEncrypt: responseEncrypt,
             responseDecrypt: responseDecrypt,
+            requestEncrypt: requestEncrypt,
             requestDecrypt: requestDecrypt
         )
     }
