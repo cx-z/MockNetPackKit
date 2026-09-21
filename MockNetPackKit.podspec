@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'MockNetPackKit'
-  s.version          = '0.2.0-m5'
+  s.version          = '0.2.0-m6'
   s.summary          = 'MockNetPack iOS SDK. HTTP capture & remote mock, integrated by the host app.'
   s.description      = <<-DESC
 MockNetPackKit is the client SDK for the internal HTTP capture & Mock platform.
@@ -17,4 +17,5 @@ host app; IntegratingApp links this pod in Debug configuration only.
   s.swift_version    = '5.0'
   s.source_files     = 'Sources/MockNetPackKit/**/*.{swift}'
   s.frameworks       = 'Foundation'
+  s.libraries        = 'z'   # M6.1 registerBinaryCodec 内置 gzip（zlib deflate）
 end
