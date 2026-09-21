@@ -122,7 +122,11 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             data = Data((mock.body ?? "").utf8)
         }
 
-        // 记录一条 Mock 命中流量。
+        // 记录一条 Mock 命中流量。M8.1：同时捕获真实请求体（M3.4 已知行为修复）——
+        // 请求体可能为 httpBodyStream，读出并重建到临时变量（本路径不转发，仅用于读取）。
+        var scratch = request
+        let reqBodyData = Self.readBody(of: request, rewriting: &scratch)
+        let reqParts = Self.bodyParts(reqBodyData)
         var reqHeaders: [String: [String]] = [:]
         for (key, value) in request.allHTTPHeaderFields ?? [:] {
             reqHeaders[key] = [value]
@@ -134,8 +138,9 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             path: path,
             query: url.query ?? "",
             requestHeaders: reqHeaders,
-            requestBody: "",
-            requestBodyBase64: nil,
+            requestBody: reqParts.text,
+            requestBodyBase64: reqParts.base64,
+            requestBodyDecoded: Self.decodedBody(reqBodyData, contentType: request.value(forHTTPHeaderField: "Content-Type")),
             statusCode: mock.statusCode,
             responseHeaders: headerFields.mapValues { [$0] },
             responseBody: mock.body,
@@ -193,12 +198,13 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             entry.responseHeaders = nil
             entry.responseBody = nil
             entry.responseBodyBase64 = nil
-        } else if let raw = data, !raw.isEmpty,
-                  let decoder = TrafficCaptureController.shared.bodyDecoder {
+        } else if let raw = data, !raw.isEmpty {
             // M4：调 App 注入的解码器把二进制私有协议解成可读文本（仅展示）。
-            // 解码用与 base64 相同的截断样本；失败返回 nil 则回退占位文本。
-            let sample = raw.count > Self.bodyLimit ? Data(raw.prefix(Self.bodyLimit)) : raw
-            entry.responseBodyDecoded = decoder(sample, http?.value(forHTTPHeaderField: "Content-Type"))
+            entry.responseBodyDecoded = Self.decodedBody(raw, contentType: http?.value(forHTTPHeaderField: "Content-Type"))
+        }
+        // M8.1：请求体同样经解码器解出可读文本（仅展示；失败/无解码器则 nil）。
+        if let bodyData, !bodyData.isEmpty {
+            entry.requestBodyDecoded = Self.decodedBody(bodyData, contentType: request.value(forHTTPHeaderField: "Content-Type"))
         }
         TrafficCaptureController.shared.record(entry)
     }
@@ -246,6 +252,16 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     /// body 治理：超 1MB 截断；无法 UTF-8 解码的二进制以 "[binary N bytes]" 占位（契约）。
     static func sanitizedBody(_ data: Data?) -> String {
         bodyParts(data).text
+    }
+
+    /// 用 App 注入的解码器把二进制 body（如 xcp AES+gzip）解成可读 UTF-8 文本
+    /// （M4 响应体 / M8.1 请求体共用；仅展示）。失败或未注册解码器返回 nil。
+    /// 解码用与 base64 相同的截断样本（1MB 上限），入参可为未截断原始数据。
+    static func decodedBody(_ data: Data?, contentType: String?) -> String? {
+        guard let data, !data.isEmpty,
+              let decoder = TrafficCaptureController.shared.bodyDecoder else { return nil }
+        let sample = data.count > bodyLimit ? Data(data.prefix(bodyLimit)) : data
+        return decoder(sample, contentType)
     }
 
     /// 返回 (展示文本, base64)。二进制时展示为占位文本、base64 携带原始字节；

@@ -98,6 +98,9 @@ struct TrafficEntry: Encodable {
     var requestBody: String
     /// 二进制请求体 base64（无法 UTF-8 解码时填充；否则 nil）。
     var requestBodyBase64: String?
+    /// 请求体经 App 注入的协议解码器解出的可读 UTF-8 文本（M8.1，与响应体同机制）；
+    /// 仅作 Web 展示，存在时 Web 优先展示它，无则回退 requestBody 的占位文本。不参与回放。
+    var requestBodyDecoded: String?
     /// 响应状态码；请求失败时为 nil。
     var statusCode: Int?
     var responseHeaders: [String: [String]]?

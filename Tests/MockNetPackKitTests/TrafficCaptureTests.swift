@@ -334,4 +334,122 @@ final class TrafficCaptureTests: XCTestCase {
         let binary = Data([0x00, 0xFF, 0x01, 0xFE])
         XCTAssertEqual(MockNetPackURLProtocol.sanitizedBody(binary), "[binary 4 bytes]")
     }
+
+    // MARK: - 请求体解析（M8.1）
+
+    /// xcp 二进制请求体：decoder 解出可读文本 → 上传条目携带 requestBodyDecoded，
+    /// requestBody 保持 "[binary N bytes]" 占位、base64 保留原始字节（不参与回放，仅展示）。
+    func testBinaryRequestBodyDecodedAndUploaded() throws {
+        let controller = TrafficCaptureController.shared
+        controller.registerBinaryCodec(
+            for: "xcp", compression: .gzip,
+            encrypt: { $0 },
+            decrypt: { _ in Data(#"{"cmd":"login"}"#.utf8) })
+        defer { controller.resetBinaryCodecs() }
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-1")
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/traffic") == true {
+                return jsonResponse(202, json: ["accepted": true, "count": 1])
+            }
+            return jsonResponse(200, json: ["ok": true])
+        }
+
+        // 请求体 = 非 UTF-8 二进制（xcp 密文），Content-Type: application/xcp。
+        let clientConfig = URLSessionConfiguration.ephemeral
+        clientConfig.protocolClasses = [MockNetPackURLProtocol.self]
+        let session = URLSession(configuration: clientConfig)
+        var req = URLRequest(url: URL(string: "https://api.example.com/v1/login")!)
+        req.httpMethod = "POST"
+        req.setValue("application/xcp", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data([0x00, 0xFF, 0x01, 0xFE, 0x10])
+
+        let exp = expectation(description: "request completes")
+        session.dataTask(with: req) { _, _, _ in exp.fulfill() }.resume()
+        wait(for: [exp], timeout: 3)
+
+        controller.flush()
+        waitUntil {
+            MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true }
+        }
+        guard let upload = MockURLProtocol.recordedRequests.first(where: { $0.url?.path.hasSuffix("/traffic") == true }),
+              let body = bodyOfRequest(upload),
+              let entries = body["entries"] as? [[String: Any]],
+              let entry = entries.first else {
+            return XCTFail("traffic upload not found")
+        }
+        XCTAssertEqual(entry["requestBody"] as? String, "[binary 5 bytes]")
+        XCTAssertNotNil(entry["requestBodyBase64"])
+        XCTAssertEqual(entry["requestBodyDecoded"] as? String, #"{"cmd":"login"}"#)
+    }
+
+    /// Mock 命中路径（M8.1，M3.4 修复）：不转发真实网络，但请求体仍被捕获上传
+    /// （requestBody 有值；xcp 请求体经 decoder 解出 requestBodyDecoded）。
+    func testMockHitCapturesRequestBody() throws {
+        let controller = TrafficCaptureController.shared
+        controller.registerBinaryCodec(
+            for: "xcp", compression: .gzip,
+            encrypt: { $0 },
+            decrypt: { _ in Data(#"{"cmd":"feed"}"#.utf8) })
+        defer { controller.resetBinaryCodecs() }
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-1")
+
+        // 注册一条命中规则：POST /v1/feed。
+        MockRuleController.shared.applyForTesting(rules: [
+            MockRule(id: "r1", method: "POST", path: "/v1/feed",
+                     response: MockResponse(statusCode: 200,
+                                            headers: ["Content-Type": "application/xcp"],
+                                            body: #"{"ok":true}"#),
+                     enabled: true, effective: true),
+        ], version: 1)
+        defer { MockRuleController.shared.reset() }
+
+        // 转发目标若被调用则失败（mock 命中不应转发真实网络）。
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/traffic") == true {
+                return jsonResponse(202, json: ["accepted": true, "count": 1])
+            }
+            throw URLError(.badServerResponse)
+        }
+
+        let clientConfig = URLSessionConfiguration.ephemeral
+        clientConfig.protocolClasses = [MockNetPackURLProtocol.self]
+        let session = URLSession(configuration: clientConfig)
+        var req = URLRequest(url: URL(string: "https://api.example.com/v1/feed")!)
+        req.httpMethod = "POST"
+        req.setValue("application/xcp", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data([0xAA, 0xBB, 0x01])
+
+        let exp = expectation(description: "mock request completes")
+        session.dataTask(with: req) { data, resp, _ in
+            XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 200)
+            // 回放链路：已注册 xcp codec 时文本回包按 gzip+encrypt 编码回协议字节。
+            XCTAssertEqual(data, Data(#"{"ok":true}"#.utf8).gzipCompressed())
+            exp.fulfill()
+        }.resume()
+        wait(for: [exp], timeout: 3)
+
+        controller.flush()
+        waitUntil {
+            MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true }
+        }
+        guard let upload = MockURLProtocol.recordedRequests.first(where: { $0.url?.path.hasSuffix("/traffic") == true }),
+              let body = bodyOfRequest(upload),
+              let entries = body["entries"] as? [[String: Any]],
+              let entry = entries.first else {
+            return XCTFail("traffic upload not found")
+        }
+        XCTAssertEqual(entry["mocked"] as? Bool, true)
+        XCTAssertEqual(entry["requestBody"] as? String, "[binary 3 bytes]")
+        XCTAssertNotNil(entry["requestBodyBase64"])
+        XCTAssertEqual(entry["requestBodyDecoded"] as? String, #"{"cmd":"feed"}"#)
+    }
 }
