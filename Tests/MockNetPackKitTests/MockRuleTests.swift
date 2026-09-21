@@ -26,8 +26,7 @@ final class MockRuleTests: XCTestCase {
 
     override func tearDown() {
         TrafficCaptureController.shared.stop()
-        TrafficCaptureController.shared.bodyEncoder = nil
-        TrafficCaptureController.shared.bodyDecoder = nil
+        TrafficCaptureController.shared.resetBinaryCodecs()
         MockRuleController.shared.reset()
         MockURLProtocol.handler = nil
         MockURLProtocol.recordedRequests.removeAll()
