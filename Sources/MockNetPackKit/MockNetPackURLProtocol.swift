@@ -39,11 +39,25 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
 
     private var startTime = Date()
     private var forwardingTask: URLSessionDataTask?
-    private var forwardingSession: URLSession?
+    /// 全局共享的转发 session：每个请求新建 session 会导致 TLS 连接不复用、
+    /// 每次都重新握手（~1s），是 M8 真机"连 SDK 后所有请求慢 1s"的根因。
+    /// URLSession 本身线程安全，completionHandler 模式可安全共享。
+    nonisolated(unsafe) private static var sharedForwardingSession: URLSession?
+    private static let sessionLock = NSLock()
     /// 在 init 阶段预读的请求体。URLSession 把 httpBody 转成 stream 传给 URLProtocol，
     /// 且 stream 在 startLoading 前已被 URLSession 预读过一次（算 Content-Length），
     /// 到 startLoading 时再读就是空的；必须在 init 时抢读。
     private var capturedBody: Data?
+
+    private static func sharedSession() -> URLSession {
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        if let s = sharedForwardingSession { return s }
+        let config = forwardingConfiguration ?? defaultForwardingConfiguration()
+        let s = URLSession(configuration: config)
+        sharedForwardingSession = s
+        return s
+    }
 
     override init(request: URLRequest, cachedResponse: CachedURLResponse?, client: URLProtocolClient?) {
         // M8.2 修复：在 init 阶段就读 stream，此时 stream 还未被 URLSession 预读。
@@ -74,12 +88,10 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         // 转发请求去掉 SDK 跳过标记（不要发给真实服务器）。
         forwarded.setValue(nil, forHTTPHeaderField: Self.skipHeader)
 
-        let session = URLSession(configuration: Self.forwardingConfiguration ?? Self.defaultForwardingConfiguration())
-        forwardingSession = session
+        let session = Self.sharedSession()
 
         let task = session.dataTask(with: forwarded) { [weak self] data, response, error in
             guard let self else { return }
-            self.forwardingSession = nil
             self.record(bodyData: bodyData, data: data, response: response, error: error)
 
             if let response {
@@ -100,8 +112,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
 
     override func stopLoading() {
         forwardingTask?.cancel()
-        forwardingSession?.invalidateAndCancel()
-        forwardingSession = nil
+        // 注意：不 invalidate 全局共享 session，否则会杀掉所有在飞的转发连接。
     }
 
     // MARK: - Mock 回包（M3.4）
