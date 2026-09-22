@@ -40,6 +40,18 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     private var startTime = Date()
     private var forwardingTask: URLSessionDataTask?
     private var forwardingSession: URLSession?
+    /// 在 init 阶段预读的请求体。URLSession 把 httpBody 转成 stream 传给 URLProtocol，
+    /// 且 stream 在 startLoading 前已被 URLSession 预读过一次（算 Content-Length），
+    /// 到 startLoading 时再读就是空的；必须在 init 时抢读。
+    private var capturedBody: Data?
+
+    override init(request: URLRequest, cachedResponse: CachedURLResponse?, client: URLProtocolClient?) {
+        // M8.2 修复：在 init 阶段就读 stream，此时 stream 还未被 URLSession 预读。
+        var rq = request
+        let body = Self.readBody(of: request, rewriting: &rq)
+        self.capturedBody = body
+        super.init(request: rq, cachedResponse: cachedResponse, client: client)
+    }
 
     override func startLoading() {
         startTime = Date()
@@ -52,10 +64,12 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             return
         }
 
-        // 请求体：URLSession 可能把 httpBody 转为 httpBodyStream。先取 body 用于
-        // 采集；若为 stream 则读出来重建 httpBody，保证转发请求不丢 body。
+        // 请求体：init 阶段已抢读到 capturedBody。转发时重建 httpBody，保证不丢 body。
         var forwarded = request
-        let bodyData = Self.readBody(of: request, rewriting: &forwarded)
+        let bodyData = self.capturedBody
+        if let bodyData = bodyData, forwarded.httpBody == nil {
+            forwarded.httpBody = bodyData
+        }
 
         // 转发请求去掉 SDK 跳过标记（不要发给真实服务器）。
         forwarded.setValue(nil, forHTTPHeaderField: Self.skipHeader)
@@ -99,6 +113,14 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         var headerFields = mock.headers ?? [:]
         if headerFields["Content-Type"] == nil {
             headerFields["Content-Type"] = "application/json"
+        }
+        // M8 修复：删除动态密钥轮换 header（x-xc-proto-res）。
+        // mock 快照是历史捕获的，其 x-xc-proto-res 是当时的旧密钥；
+        // 若回放给 IntegratingApp，responseComplete 会把旧密钥设为当前密钥，
+        // 导致后续所有真实请求用过期密钥加密 → 服务器无法解密 → 全部 96 字节错误。
+        // 删除后 IntegratingApp 收不到密钥更新指令，继续用当前密钥，不影响 mock 回放本身。
+        headerFields = headerFields.filter { key, _ in
+            !key.lowercased().contains("proto-res")
         }
         let response = HTTPURLResponse(
             url: url, statusCode: mock.statusCode,
@@ -219,6 +241,9 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     /// 读取请求体；若 body 在 stream 中则重建为 httpBody（保证转发不丢）。
+    /// M8-debug 修复：用 hasBytesAvailable 判断是否还有数据，而不是 read 返回值。
+    /// 原因：InputStream.read 在数据异步到达时会返回 0（非 EOF，只是"数据未就绪"），
+    /// 之前用 n<=0 break 会导致只读到部分 body，服务器解密失败返回错误 key。
     private static func readBody(of request: URLRequest, rewriting forwarded: inout URLRequest) -> Data? {
         if let body = request.httpBody {
             return body
@@ -230,11 +255,21 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         var chunk = [UInt8](repeating: 0, count: 4096)
         while stream.hasBytesAvailable {
             let n = stream.read(&chunk, maxLength: chunk.count)
-            if n <= 0 { break }
-            buffer.append(chunk, count: n)
+            if n > 0 {
+                buffer.append(chunk, count: n)
+            } else if n == 0 {
+                // read 返回 0 但 hasBytesAvailable=yes：数据未就绪，短暂等待
+                Thread.sleep(forTimeInterval: 0.002)
+            } else {
+                // n < 0：错误，跳出
+                break
+            }
         }
         if !buffer.isEmpty {
             forwarded.httpBody = buffer
+            // 关键防御：stream 已被读出并 close，必须清空，否则 URLSession 可能误用
+            // 这个已关闭的 stream 作为 body（引用类型拷贝仍指向同一 stream），导致转发空 body。
+            forwarded.httpBodyStream = nil
         }
         return buffer
     }
