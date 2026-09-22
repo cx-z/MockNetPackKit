@@ -206,15 +206,16 @@ final class ConnectionController: @unchecked Sendable {
         case .failure(let error):
             switch error {
             case ConnectionClientError.httpStatus(404):
-                // M7.2.3: 设备未在 Web 注册 → 静默停循环，不自动注册、不弹窗。
+                // 设备未在 Web 注册（或被删除）→ 置为未注册，10s 后自动重试 register。
+                // 用户在 Web 重新注册后无需重启 App 即可自动恢复。
                 withLock {
                     registered = false
-                    unregistered = true
+                    unregistered = false
                 }
                 setConnectionState(.offline)
-                log("heartbeat 404: device not registered on server; SDK idle (register the device in Web)")
+                log("heartbeat 404: device not registered; will retry register in 10s")
                 finishCycle()
-                // 不再 scheduleNext：设备需在 Web 注册后由用户重启 App 恢复。
+                scheduleNext(delay: 10)
 
             default:
                 // 网络错误 / 5xx / 解码失败 → 指数退避重连。
