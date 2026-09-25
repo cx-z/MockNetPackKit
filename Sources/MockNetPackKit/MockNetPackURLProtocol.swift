@@ -155,10 +155,10 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             data = Data((mock.body ?? "").utf8)
         }
 
-        // 记录一条 Mock 命中流量。M8.1：同时捕获真实请求体（M3.4 已知行为修复）——
-        // 请求体可能为 httpBodyStream，读出并重建到临时变量（本路径不转发，仅用于读取）。
-        var scratch = request
-        let reqBodyData = Self.readBody(of: request, rewriting: &scratch)
+        // 记录一条 Mock 命中流量。M8.1：同时捕获真实请求体（M3.4 已知行为修复）。
+        // M8.2 修复：请求体在 init 阶段已抢读到 capturedBody（此后 stream 已耗尽），
+        // 此处必须复用 capturedBody，不能重读 request（会读到空体）。
+        let reqBodyData = self.capturedBody
         let reqParts = Self.bodyParts(reqBodyData)
         var reqHeaders: [String: [String]] = [:]
         for (key, value) in request.allHTTPHeaderFields ?? [:] {
