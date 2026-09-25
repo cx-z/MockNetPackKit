@@ -6,6 +6,8 @@ import Foundation
 
 /// 设备连接状态（SDK 侧视角；服务端另有 derived offline 判定）。
 public enum ConnectionState: Sendable, Equatable {
+    /// 未配置服务器（M9.2）：无已保存地址，`start()` 无参直接进入，等待扫码连接。
+    case unconfigured
     /// 启动/注册中，尚未确认在线。
     case connecting
     /// 心跳成功，服务端在线。
@@ -56,7 +58,7 @@ struct HeartbeatRequest: Encodable {
     let sdkVersion: String
 }
 
-/// 设备注册请求（契约 RegisterDeviceRequest）。
+/// 设备注册请求（契约 RegisterDeviceRequest；M9/v0.8.0 增可选 pairingToken/deviceName）。
 struct RegisterDeviceRequest: Encodable {
     let app: String
     let did: String
@@ -64,6 +66,13 @@ struct RegisterDeviceRequest: Encodable {
     let osVersion: String
     let sdkVersion: String
     let appVersion: String
+    /// App 显示名（v0.9.0）：读宿主 CFBundleDisplayName（如 Dokimo）；可选，Web 显示回退 bundle id。
+    let appName: String?
+    /// 扫码配对令牌（M9）：来自二维码；有效时未知 (app, did) 自动注册（D1），已存在则复用（D7）。
+    /// nil 时省略字段，服务端保持 M7.2.3 语义（未知设备 404）。
+    let pairingToken: String?
+    /// 扫码自动注册时的设备显示名（可选）；不提供则服务端回退 platform+did 前缀。
+    let deviceName: String?
 }
 
 /// 设备注册响应（契约 RegisterDeviceResponse）。

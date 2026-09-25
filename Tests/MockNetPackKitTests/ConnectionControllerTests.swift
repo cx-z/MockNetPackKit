@@ -92,7 +92,7 @@ final class ConnectionControllerTests: XCTestCase {
             return jsonResponse(200, json: heartbeatResponseJSON(session: nil))
         }
 
-        controller.start(server: serverURL, appID: appID, appVersion: "1.0", sdkVersion: "0.2.0-m2", osVersion: "17.5")
+        controller.start(server: serverURL, appID: appID, appVersion: "1.0", appName: "Dokimo", sdkVersion: "0.2.0-m9", osVersion: "17.5")
 
         // 先注册、再心跳。
         waitUntil { self.registerCalls >= 1 && self.heartbeatCalls >= 1 }
@@ -102,8 +102,9 @@ final class ConnectionControllerTests: XCTestCase {
         let body = bodyOfRequest(registerReq!)
         XCTAssertEqual(body?["app"] as? String, appID)
         XCTAssertEqual(body?["platform"] as? String, "ios")
-        XCTAssertEqual(body?["sdkVersion"] as? String, "0.2.0-m2")
+        XCTAssertEqual(body?["sdkVersion"] as? String, "0.2.0-m9")
         XCTAssertEqual(body?["appVersion"] as? String, "1.0")
+        XCTAssertEqual(body?["appName"] as? String, "Dokimo", "v0.9.0: SDK must report the host app display name")
         XCTAssertNotNil(body?["did"] as? String)
 
         // 心跳路径带 app/did。

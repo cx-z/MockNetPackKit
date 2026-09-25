@@ -37,10 +37,16 @@ final class ConnectionController: @unchecked Sendable {
     private var serverURL: URL?
     private var appIDValue: String?
     private var appVersionValue: String?
+    private var appNameValue: String?
     private var sdkVersionValue: String = ""
     private var osVersionValue: String = ""
     private var didValue: String?
     private var logHandler: (@Sendable (String) -> Void)?
+
+    // M9.2 扫码连接：本次连接会话使用的配对令牌与设备显示名（一次性注册通道；
+    // 连接会话内保留——网络抖动重注册时仍可复用，stop/start 时重置）。
+    private var pairingTokenValue: String?
+    private var deviceNameValue: String?
 
     private var serverConfig = ServerConfig(heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 60)
     private var registered = false
@@ -60,12 +66,19 @@ final class ConnectionController: @unchecked Sendable {
     // MARK: - 生命周期
 
     /// 启动连接层（幂等：已在运行则直接返回）。did 首次生成后持久化。
+    /// - Parameters:
+    ///   - server: 服务器 base URL。
+    ///   - pairingToken: 扫码配对令牌（M9.2，可选）：随注册请求携带，服务端据此自动注册/复用设备。
+    ///   - deviceName: 扫码自动注册时的设备显示名（M9.2，可选）。
     func start(server: URL,
                appID: String?,
                externalDID: String? = nil,
                appVersion: String?,
+               appName: String? = nil,
                sdkVersion: String,
                osVersion: String,
+               pairingToken: String? = nil,
+               deviceName: String? = nil,
                logHandler: (@Sendable (String) -> Void)? = nil) {
         lock.lock()
         guard !isRunningValue else { lock.unlock(); return }
@@ -73,6 +86,7 @@ final class ConnectionController: @unchecked Sendable {
         serverURL = server
         appIDValue = appID
         appVersionValue = appVersion
+        appNameValue = appName
         sdkVersionValue = sdkVersion
         osVersionValue = osVersion
         // M7.2.4: 业务方传入 did（如 KK Keychain deviceID）则直接用；否则 SDK 自行生成。
@@ -82,6 +96,8 @@ final class ConnectionController: @unchecked Sendable {
         registered = false
         unregistered = false
         currentBackoff = backoffBase
+        pairingTokenValue = pairingToken
+        deviceNameValue = deviceName
         lock.unlock()
 
         log("MockNetPackKit connecting to \(server.absoluteString) app=\(appID ?? "?") did=\(self.did ?? "?")")
@@ -96,12 +112,45 @@ final class ConnectionController: @unchecked Sendable {
             logHandler: self.logHandler)
     }
 
+    /// 无服务器启动（M9.2）：仅解析 did 并置 `.unconfigured`，不发起网络、不启动采集。
+    /// 供 `start()` 无参门面在未保存地址时调用——保证后续扫码复用同一 did（D7：
+    /// 扫码注册与启动注册使用同一设备标识，不因扫码新生成）。
+    func startUnconfigured(appID: String?,
+                           externalDID: String? = nil,
+                           appVersion: String?,
+                           appName: String? = nil,
+                           sdkVersion: String,
+                           osVersion: String,
+                           logHandler: (@Sendable (String) -> Void)? = nil) {
+        lock.lock()
+        guard !isRunningValue else { lock.unlock(); return }
+        isRunningValue = true
+        serverURL = nil
+        appIDValue = appID
+        appVersionValue = appVersion
+        appNameValue = appName
+        sdkVersionValue = sdkVersion
+        osVersionValue = osVersion
+        didValue = externalDID ?? DIDStore.did(forApp: appID ?? "")
+        self.logHandler = logHandler
+        pairingTokenValue = nil
+        deviceNameValue = nil
+        registered = false
+        unregistered = false
+        lock.unlock()
+
+        log("MockNetPackKit unconfigured: no saved server address (scan to connect)")
+        setConnectionState(.unconfigured)
+    }
+
     /// 停止连接层：停调度、清状态（did 保留，下次 start 复用）。
     func stop() {
         lock.lock()
         guard isRunningValue else { lock.unlock(); return }
         isRunningValue = false
         inflight = false
+        pairingTokenValue = nil
+        deviceNameValue = nil
         lock.unlock()
         log("MockNetPackKit stopped")
         // M2.4：先停止采集（注销 URLProtocol、清空待上传批次），再广播 idle 状态。
@@ -121,6 +170,12 @@ final class ConnectionController: @unchecked Sendable {
     var did: String? {
         lock.lock(); defer { lock.unlock() }
         return didValue
+    }
+
+    /// 当前连接会话的 appID（M9.2：扫码流程复用与启动一致的 appID/did 作用域）。
+    var resolvedAppID: String? {
+        lock.lock(); defer { lock.unlock() }
+        return appIDValue
     }
 
     var connectionState: ConnectionState {
@@ -230,8 +285,8 @@ final class ConnectionController: @unchecked Sendable {
     // MARK: - 注册
 
     private func performRegister(client: ConnectionClient, appID: String, did: String) async {
-        let meta = withLock { () -> (os: String, sdk: String, app: String) in
-            (osVersionValue, sdkVersionValue, appVersionValue ?? "")
+        let meta = withLock { () -> (os: String, sdk: String, app: String, appName: String?, token: String?, deviceName: String?) in
+            (osVersionValue, sdkVersionValue, appVersionValue ?? "", appNameValue, pairingTokenValue, deviceNameValue)
         }
         let req = RegisterDeviceRequest(
             app: appID,
@@ -239,7 +294,10 @@ final class ConnectionController: @unchecked Sendable {
             platform: "ios",
             osVersion: meta.os,
             sdkVersion: meta.sdk,
-            appVersion: meta.app
+            appVersion: meta.app,
+            appName: meta.appName,
+            pairingToken: meta.token,
+            deviceName: meta.deviceName
         )
         do {
             let resp: RegisterDeviceResponse = try await client.post(
