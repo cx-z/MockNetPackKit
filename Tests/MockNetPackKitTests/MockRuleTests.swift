@@ -247,7 +247,7 @@ final class MockRuleTests: XCTestCase {
         controller.start(serverURL: serverURL, appID: appID, did: did)
         controller.updateSession(capturing: true, sessionID: "sess-enc")
 
-        // 模拟 IntegratingApp 的 xcp encoder：给文本加个魔数头，假装编码成二进制。
+        // 模拟业务方的 xcp encoder：给文本加个魔数头，假装编码成二进制。
         TrafficCaptureController.shared.bodyEncoder = { text, contentType in
             XCTAssertEqual(contentType, "application/x-xcp")
             return Data("ENC:".utf8) + Data(text.utf8)

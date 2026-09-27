@@ -3,9 +3,9 @@ import zlib
 
 /// 二进制协议 gzip 压缩（M6.1）。
 ///
-/// 与 IntegratingApp FDExtension `gzipCompress()` 输出格式一致：标准 gzip（1f 8b 头 + deflate +
+/// 与业务方 FDExtension `gzipCompress()` 输出格式一致：标准 gzip（1f 8b 头 + deflate +
 /// CRC32 + ISIZE）。由 SDK 内置 zlib 产出（deflateInit2 windowBits = MAX_WBITS + 16）。
-/// 注意：解压不在 SDK 内——已定（M6）由业务方 decrypt 闭包完成（如 IntegratingApp 的
+/// 注意：解压不在 SDK 内——已定（M6）由业务方 decrypt 闭包完成（如业务方的
 /// `decodeAes(data, ungzip: true)`）。
 extension Data {
     /// 把本 Data 按标准 gzip 格式压缩；空数据或压缩失败返回 nil。

@@ -7,7 +7,7 @@ import UIKit
 /// MockNetPackKit 公共入口（连接层，M1.5）。
 ///
 /// 本 SDK 自身不做 Debug/Release 判断——是否集成、如何隔离构建完全由业务
-/// App 决定；接入方 IntegratingApp 要求 Release 产物不含本 SDK，由 IntegratingApp 构建集成层保证
+/// App 决定；接入方要求 Release 产物不含本 SDK，由接入方构建集成层保证
 /// （见 tasks/M0-SDK接入要点.md）。
 public enum MockNetPackKit {
 
@@ -47,7 +47,7 @@ public enum MockNetPackKit {
     ///   按 compression 压缩 → 业务 AES 加密 → 密文字节用于 Mock 回包。
     ///
     /// 压缩语义（已定）：gzip 压缩由 SDK 完成（产出标准 1f 8b）；gzip 解压由业务方
-    /// 在 `decrypt` 闭包内完成（如 IntegratingApp 的 `decodeAes(data, ungzip: true)`）。
+    /// 在 `decrypt` 闭包内完成（如业务方的 `decodeAes(data, ungzip: true)`）。
     ///
     /// 匹配：按注册顺序，contentType（大小写不敏感）包含 `contentTypeKey` 即命中，
     /// 首个命中生效；未命中返回 nil，SDK 走既有 fallback（bodyBase64 → UTF-8）。
@@ -86,7 +86,7 @@ public enum MockNetPackKit {
     /// - Parameters:
     ///   - server: 服务器 base URL（形如 `http://host:4290/api/v1`）。
     ///   - appID: App 标识，默认取 Bundle ID；SDK 生成并持久化 did 的作用域。
-    ///   - did: 业务方提供的设备 ID（如 IntegratingApp 的 Keychain deviceID）。传入后 SDK 不再
+    ///   - did: 业务方提供的设备 ID（如业务方 Keychain deviceID）。传入后 SDK 不再
     ///     自行生成 did，直接用它——保证 did 与调试页展示一致、Clean Build 不漂移。
     ///     传 nil 则回退到 SDK 内部 DIDStore 生成。
     ///   - appVersion: App 版本，默认取 CFBundleShortVersionString。
@@ -112,7 +112,7 @@ public enum MockNetPackKit {
     /// 无参启动（M9.2 扫码连接）：读取持久化服务器地址直连；未配置 → `.unconfigured`
     /// （不发起网络，等待扫码）。appID 固定取 Bundle ID（ServerAddressStore 键与 did
     /// 作用域一致）。已注册设备重启免扫码（A2）。
-    /// - Parameter did: 业务方设备 ID（如 IntegratingApp Keychain deviceID，M7.2.4 一致性要求）。
+    /// - Parameter did: 业务方设备 ID（如业务方 Keychain deviceID，M7.2.4 一致性要求）。
     ///   传 nil 则回退 SDK 内部 DIDStore。无论直连还是扫码注册，did 均以此为准（D7）。
     public static func start(did: String? = nil) {
         if let url = ServerAddressStore.load(forApp: bundleID) {
@@ -282,7 +282,7 @@ public enum MockNetPackKit {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
     }
 
-    /// App 显示名（v0.9.0）：CFBundleDisplayName（如 IntegratingApp），回退 CFBundleName（工程名）。
+    /// App 显示名（v0.9.0）：CFBundleDisplayName（如接入方 App 的显示名），回退 CFBundleName（工程名）。
     /// 随注册请求上报 appName，Web 设备列表优先展示显示名而非 bundle id。
     private static var appName: String? {
         let display = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String

@@ -8,7 +8,7 @@
 iOS/MockNetPackKit/
 ├── Package.swift                       # SwiftPM manifest (products: MockNetPackKit, MockNetPackSmoke)
 ├── MockNetPackKit.podspec              # CocoaPods podspec (0.2.0-m8; integration with CocoaPods apps)
-├── README.md                           # Integration notes (Debug-only, Release exclusion, IntegratingApp requirements)
+├── README.md                           # Integration notes (Debug-only, Release exclusion, integrating-app requirements)
 ├── Sources/
 │   ├── MockNetPackKit/                 # ← the SDK implementation
 │   └── MockNetPackSmoke/               # CLI smoke tool (executable target)

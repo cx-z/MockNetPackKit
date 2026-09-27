@@ -97,7 +97,7 @@ final class ConnectionController: @unchecked Sendable {
         appNameValue = appName
         sdkVersionValue = sdkVersion
         osVersionValue = osVersion
-        // M7.2.4: 业务方传入 did（如 IntegratingApp Keychain deviceID）则直接用；否则 SDK 自行生成。
+        // M7.2.4: 业务方传入 did（如业务方 Keychain deviceID）则直接用；否则 SDK 自行生成。
         didValue = externalDID ?? DIDStore.did(forApp: appID ?? "")
         self.logHandler = logHandler
         serverConfig = ServerConfig(heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 60)

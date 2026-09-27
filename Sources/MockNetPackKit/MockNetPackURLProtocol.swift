@@ -133,9 +133,9 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         }
         // M8 修复：删除动态密钥轮换 header（x-xc-proto-res）。
         // mock 快照是历史捕获的，其 x-xc-proto-res 是当时的旧密钥；
-        // 若回放给 IntegratingApp，responseComplete 会把旧密钥设为当前密钥，
+        // 若回放给接入方，responseComplete 会把旧密钥设为当前密钥，
         // 导致后续所有真实请求用过期密钥加密 → 服务器无法解密 → 全部 96 字节错误。
-        // 删除后 IntegratingApp 收不到密钥更新指令，继续用当前密钥，不影响 mock 回放本身。
+        // 删除后接入方收不到密钥更新指令，继续用当前密钥，不影响 mock 回放本身。
         headerFields = headerFields.filter { key, _ in
             !key.lowercased().contains("proto-res")
         }

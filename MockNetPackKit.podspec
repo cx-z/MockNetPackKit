@@ -7,7 +7,7 @@ MockNetPackKit is the client SDK for the internal HTTP capture & Mock platform.
 M1.5: connection layer (did registration, heartbeat, session state); interceptor
 lands in M2, mock client in M3.
 Whether to integrate (and in which build configurations) is decided by the
-host app; IntegratingApp links this pod in Debug configuration only.
+host app; the integrating app links this pod in Debug configuration only.
                        DESC
   s.homepage         = 'https://github.com/cx-z/mockd'
   s.license          = { :type => 'Proprietary' }

@@ -150,7 +150,7 @@ Failure: saved address untouched (R1.6)
 start(did:)  (M9.2 no-arg launch)
   → saved address? → start(server:, did:)   // direct connect, no scan needed (A2)
   → none         → startUnconfigured()      // resolves did only; .unconfigured, no network
-did = externalDID (e.g. IntegratingApp UIDevice.deviceID) ?? DIDStore — scan register reuses the SAME did (D7)
+did = externalDID (e.g. 业务方 UIDevice.deviceID) ?? DIDStore — scan register reuses the SAME did (D7)
 ```
 
 ## Fail-open guarantees

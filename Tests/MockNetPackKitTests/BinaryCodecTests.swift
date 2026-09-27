@@ -83,7 +83,7 @@ final class BinaryCodecTests: XCTestCase {
 
     // MARK: - 展示链路（decrypt → UTF-8）
 
-    /// decrypt 闭包解出明文后，SDK 转 UTF-8 文本（对应 IntegratingApp decodeAes(ungzip: true)）。
+    /// decrypt 闭包解出明文后，SDK 转 UTF-8 文本（对应业务方 decodeAes(ungzip: true)）。
     func testDecodePathDecryptThenUTF8() throws {
         MockNetPackKit.registerBinaryCodec(
             for: "xcp",

@@ -7,7 +7,7 @@ import Foundation
 /// - `a`：appID（必须与当前 App 匹配，防错扫）；
 /// - `t`：配对令牌（10 分钟有效，D5）。
 ///
-/// did 不在二维码内（D6 澄清）：did 由设备本地持有（DIDStore / IntegratingApp Keychain），
+/// did 不在二维码内（D6 澄清）：did 由设备本地持有（DIDStore / 业务方 Keychain），
 /// 二维码只回答「连哪个服务器、以谁的身份注册」。
 struct QRConnectPayload: Equatable {
     /// 服务器 base URL（如 `http://host:4290/api/v1`）。
