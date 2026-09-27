@@ -57,7 +57,7 @@ The host app typically: calls `start(server:)` at launch (Debug only), optionall
 | Item | Value | Where |
 |---|---|---|
 | SDK version | `0.2.0-m9` | `MockNetPackKit.version` |
-| Heartbeat interval | Server-driven: **3s capturing / 5s idle** (dynamic since M8.2/M8.3), clamped 5…300s | `ConnectionController.heartbeatInterval()` |
+| Heartbeat interval | Server-driven: **3s capturing / 5s idle** (dynamic since M8.2/M8.3), clamped 2…300s (4.12: floor lowered from 5 so the 3s capturing contract passes through) | `ConnectionController.heartbeatInterval()` |
 | Heartbeat backoff | Exponential 1s → max 30s | `advanceBackoff()` |
 | Traffic batch | 200 entries / 8 MB / 2s flush; contract max 500 per upload | `TrafficCaptureController` |
 | Body truncation | 1 MB per body (fixed, contract v0.2.0) | `MockNetPackURLProtocol.bodyLimit` |

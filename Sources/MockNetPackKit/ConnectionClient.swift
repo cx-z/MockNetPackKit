@@ -19,18 +19,37 @@ enum ConnectionClientError: Error {
 ///
 /// 所有 SDK 自身请求（注册/心跳/流量上传）携带跳过标记 header：
 /// `MockNetPackURLProtocol.canInit` 据此放行，避免抓包器递归拦截自身流量。
+///
+/// 4.20：默认复用进程级单一 `URLSession`（`sharedSession`），不再每次
+/// 心跳/刷包 `new URLSession`——每个 session 都有独立 delegate 队列与连接
+/// 池，3~5s 一次的创建频率纯属浪费。测试仍可通过 `configuration:` 注入
+/// 专用 session（MockURLProtocol）。
 struct ConnectionClient: Sendable {
     let session: URLSession
     let baseURL: URL
     let requestTimeout: TimeInterval
 
-    init(configuration: URLSessionConfiguration = .default,
+    init(configuration: URLSessionConfiguration? = nil,
          baseURL: URL,
          requestTimeout: TimeInterval = 10) {
-        self.session = URLSession(configuration: configuration)
+        if let configuration = configuration {
+            self.session = URLSession(configuration: configuration)
+        } else {
+            self.session = ConnectionClient.sharedSession
+        }
         self.baseURL = baseURL
         self.requestTimeout = requestTimeout
     }
+
+    /// 进程级共享会话（4.20）：注册/心跳/流量上传/规则拉取全部复用一个
+    /// 连接池。惰性创建；即便 App 层抓包注入已启用，SDK 自身请求带
+    /// skipHeader，`MockNetPackURLProtocol.canInit` 会放行，不会递归抓自身。
+    private static let sharedSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 10
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
 
     /// 发起 JSON POST 并解码响应。
     func post<Body: Encodable, Resp: Decodable>(

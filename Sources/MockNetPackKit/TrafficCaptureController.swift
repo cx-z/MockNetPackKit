@@ -239,11 +239,15 @@ final class TrafficCaptureController: @unchecked Sendable {
         let changed = capturingValue != capturing || sessionIDValue != sessionID
         capturingValue = capturing
         sessionIDValue = sessionID
-        // 会话切换（开始/结束）都清空待上传批次：
+        // 会话切换（开始/结束）才清空待上传批次：
         // - 开始：上个会话的残留批次与新会话无关；
         // - 结束：临时记录随会话结束丢弃（与服务端清空语义一致）。
-        pending = []
-        pendingBytes = 0
+        // 值未变（心跳重复下发同一会话状态）时不清空——否则每次心跳都会丢掉
+        // flush 定时器（2s）尚未触发的一整段已录流量。
+        if changed {
+            pending = []
+            pendingBytes = 0
+        }
         lock.unlock()
 
         guard changed else { return }

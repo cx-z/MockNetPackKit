@@ -14,6 +14,9 @@ public enum ConnectionState: Sendable, Equatable {
     case connected
     /// 心跳失败（网络/5xx），退避重连中。
     case offline
+    /// 配对令牌无效/过期（4.13）：携带配对令牌注册收到 403 → 停止连接循环并上抛
+    /// 此状态，业务方可提示「二维码已过期，请刷新」；不再无限退避重连。
+    case tokenInvalid
 }
 
 /// 抓包会话状态（由心跳响应 session 字段推导；SDK 据此启停采集）。
