@@ -20,6 +20,12 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     /// 请求/响应体截断上限（契约 v0.2.0：M2 固定 1MB，不做配置项）。
     static let bodyLimit = 1_048_576
 
+    /// 请求体读取超时（4.21）：`readBody` 在 URL 加载线程上轮询
+    /// `Thread.sleep(0.002)` 等待"数据未就绪"的流，若无界会挂死该线程。
+    /// 2s 远超正常缓冲体（内存/文件流）的读取耗时（毫秒级）；触底即返回
+    /// 已读部分，请求照常发出（尽力而为），绝不无限等待。
+    static let readBodyTimeout: TimeInterval = 2
+
     /// 转发用 URLSessionConfiguration 注入点：测试用 MockURLProtocol 模拟真实网络。
     nonisolated(unsafe) static var forwardingConfiguration: URLSessionConfiguration?
 
@@ -255,6 +261,11 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     /// M8-debug 修复：用 hasBytesAvailable 判断是否还有数据，而不是 read 返回值。
     /// 原因：InputStream.read 在数据异步到达时会返回 0（非 EOF，只是"数据未就绪"），
     /// 之前用 n<=0 break 会导致只读到部分 body，服务器解密失败返回错误 key。
+    /// 4.21 修复：轮询以 `readBodyTimeout` 为总预算（确定性上限），流始终不
+    /// EOF 时在截止时间返回已读部分，不再无限 `Thread.sleep` 挂死 URL 加载
+    /// 线程。不用异步读取：URLProtocol.init 签名固定为同步，startLoading 又
+    /// 需要同步拿到重写后的 body（httpBodyStream 一经本类读取即被消耗），
+    /// 异步方案会让"已读未转发"的 body 状态不可判定，故采用带超时的确定性读取。
     private static func readBody(of request: URLRequest, rewriting forwarded: inout URLRequest) -> Data? {
         if let body = request.httpBody {
             return body
@@ -264,7 +275,8 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         defer { stream.close() }
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: 4096)
-        while stream.hasBytesAvailable {
+        let deadline = Date().addingTimeInterval(readBodyTimeout)
+        while stream.hasBytesAvailable && Date() < deadline {
             let n = stream.read(&chunk, maxLength: chunk.count)
             if n > 0 {
                 buffer.append(chunk, count: n)

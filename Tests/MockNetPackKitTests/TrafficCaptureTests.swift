@@ -40,9 +40,12 @@ final class TrafficCaptureTests: XCTestCase {
 
     // MARK: - 辅助
 
+    /// 轮询等待条件成立。用单调时钟（systemUptime）计时：调度/定时器走 mach
+    /// 时钟，墙钟（Date()）在系统时钟跳变（VM/NTP 校时）时会与定时器分离，
+    /// 造成"定时器已到而断言测出超时"的假失败（4.20 验证期实锤）。
     private func waitUntil(timeout: TimeInterval = 3, _ condition: () -> Bool) {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while ProcessInfo.processInfo.systemUptime < deadline {
             if condition() { return }
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
@@ -190,6 +193,39 @@ final class TrafficCaptureTests: XCTestCase {
     }
 
     // MARK: - 攒批与清空
+
+    /// 回归（P0-2）：心跳重复下发同一会话状态（值未变）不得清空攒批缓存。
+    /// 旧实现每次 updateSession 都无条件清空 pending，心跳（3–5s）会丢掉
+    /// flush 定时器（2s）尚未触发的一段已录流量。
+    func testRepeatedUpdateSessionKeepsPending() throws {
+        let controller = TrafficCaptureController.shared
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-1")
+
+        controller.record(makeEntry())
+        controller.record(makeEntry(method: "POST"))
+
+        // 模拟两次心跳重复下发同一会话状态。
+        controller.updateSession(capturing: true, sessionID: "sess-1")
+        controller.updateSession(capturing: true, sessionID: "sess-1")
+
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/traffic") == true {
+                return jsonResponse(202, json: ["accepted": true, "count": 2])
+            }
+            return jsonResponse(200, json: ["ok": true])
+        }
+        controller.flush()
+        waitUntil {
+            MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true }
+        }
+        guard let upload = MockURLProtocol.recordedRequests.first(where: { $0.url?.path.hasSuffix("/traffic") == true }),
+              let body = bodyOfRequest(upload),
+              let entries = body["entries"] as? [[String: Any]] else {
+            return XCTFail("traffic upload not found")
+        }
+        XCTAssertEqual(entries.count, 2, "重复心跳不得清空攒批缓存")
+    }
 
     /// 会话结束（idle）清空待上传批次。
     func testSessionEndClearsPending() throws {
@@ -554,4 +590,31 @@ final class TrafficCaptureTests: XCTestCase {
         XCTAssertNil(entry["requestBodyDecoded"])
         XCTAssertEqual(entry["requestBody"] as? String, "[binary 3 bytes]")
     }
+
+    // MARK: - 请求体读取（4.21）
+
+    /// 4.21 回归：请求体流"数据未就绪"且永不 EOF 时，`readBody` 必须在
+    /// `readBodyTimeout` 内返回（确定性上限），不再无限忙等挂死 URL 加载线程。
+    func testReadBodyBoundedWhenStreamNeverEOFs() {
+        var req = URLRequest(url: URL(string: "https://api.example.com/v1/login")!)
+        req.httpMethod = "POST"
+        req.httpBodyStream = StalledBodyStream()
+
+        let exp = expectation(description: "URLProtocol init returns")
+        DispatchQueue.global().async {
+            _ = MockNetPackURLProtocol(request: req, cachedResponse: nil, client: nil)
+            exp.fulfill()
+        }
+        // 容忍 readBodyTimeout=2s + 调度余量；修复前会无限挂起 → wait 超时失败。
+        wait(for: [exp], timeout: 8)
+    }
+}
+
+/// 病态请求体流：模拟"数据未就绪"（read 返回 0）且永不 EOF 的 InputStream。
+private final class StalledBodyStream: InputStream {
+    override var hasBytesAvailable: Bool { true }
+    override func open() {}
+    override func close() {}
+    override func read(_ buffer: UnsafeMutablePointer<UInt8>, maxLength: Int) -> Int { 0 }
+    override var streamStatus: Stream.Status { .open }
 }

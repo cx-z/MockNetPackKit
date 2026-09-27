@@ -40,10 +40,12 @@ final class ConnectionControllerTests: XCTestCase {
 
     // MARK: - 辅助
 
-    /// 轮询等待条件成立。
+    /// 轮询等待条件成立。用单调时钟（systemUptime）计时：调度/定时器走 mach
+    /// 时钟，墙钟（Date()）在系统时钟跳变（VM/NTP 校时）时会与定时器分离，
+    /// 造成"定时器 3s 已到而断言测出 27s/277s"的假失败（4.20 验证期实锤）。
     private func waitUntil(timeout: TimeInterval = 3, _ condition: () -> Bool) {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while ProcessInfo.processInfo.systemUptime < deadline {
             if condition() { return }
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
@@ -223,9 +225,43 @@ final class ConnectionControllerTests: XCTestCase {
         XCTAssertEqual(heartbeatCount.value, frozen, "stop 后不应再有心跳")
     }
 
+    /// 4.7 回归：stop() 时心跳仍在途，旧心跳结果返回后不得把连接状态"翻活"
+    /// （不得置 connected/capturing，也不得继续调度新循环）。
+    func testStop_InFlightHeartbeatResultDiscarded() {
+        let gate = DispatchSemaphore(value: 0)
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/devices/register") == true {
+                return jsonResponse(200, json: registerResponseJSON(app: "com.test.app", did: "any"))
+            }
+            // 慢心跳：挂起直到 stop() 后放行，模拟"在途"的 await。
+            gate.wait()
+            return jsonResponse(200, json: heartbeatResponseJSON(session: sessionJSON(id: "sess-late")))
+        }
+
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
+
+        // 心跳请求已发出、handler 被 gate 阻塞（在途）。
+        waitUntil { self.heartbeatCalls >= 1 }
+
+        controller.stop()
+        XCTAssertEqual(controller.connectionState, .offline)
+
+        // 放行旧心跳 → 返回"成功 + 会话"。旧代结果必须被丢弃。
+        gate.signal()
+        Thread.sleep(forTimeInterval: 0.4)
+        XCTAssertEqual(controller.connectionState, .offline, "stop 后旧心跳结果不得翻活连接状态")
+        XCTAssertEqual(controller.sessionState, .idle, "stop 后旧心跳结果不得置 capturing")
+        XCTAssertFalse(controller.isRunning)
+
+        // 旧代循环不得再调度新心跳。
+        let frozen = heartbeatCalls
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(heartbeatCalls, frozen, "stop 后旧代循环不得再调度新心跳")
+    }
+
     func testHeartbeatIntervalFollowsServerConfig() {
-        // 不注入 override：注册响应下发 interval=5（钳制下限），
-        // 验证 SDK 以服务端配置为准（而非固定/默认值）。
+        // 不注入 override：注册响应下发 interval=5（4.12 后仍是服务端下发值、
+        // 高于钳制下限 2s），验证 SDK 以服务端配置为准（而非固定/默认值）。
         controller.heartbeatIntervalOverride = nil
         MockURLProtocol.handler = { request in
             if request.url?.path.hasSuffix("/devices/register") == true {
@@ -249,14 +285,89 @@ final class ConnectionControllerTests: XCTestCase {
         controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
 
         // M3 fix：注册后首次心跳为快速 2s（启动首屏尽快拉规则），不验证首跳间隔；
-        // 验证从第二次起按服务端配置 5s 节奏心跳。
+        // 验证从第二次起按服务端配置 5s 节奏心跳。间隔用单调时钟测量（见 waitUntil）。
         waitUntil(timeout: 4) { self.heartbeatCalls >= 1 }
-        let t1 = Date()
+        let t1 = ProcessInfo.processInfo.systemUptime
         waitUntil(timeout: 10) { self.heartbeatCalls >= 2 }
-        let gap = Date().timeIntervalSince(t1)
+        let gap = ProcessInfo.processInfo.systemUptime - t1
         XCTAssertGreaterThanOrEqual(gap, 4.0,
             "第二次起心跳间隔应采纳服务端配置 5s（实测 \(gap)s）")
         XCTAssertLessThanOrEqual(gap, 10.0)
+    }
+
+    // 4.12 回归：服务端契约下发 capturing 3s，SDK 不得把它钳制抬成 5s
+    // （否则"快速感知规则变更"失效）。下限 2s 只挡误配，不挡契约值。
+    func testHeartbeatIntervalAllowsCapturing3s() {
+        controller.heartbeatIntervalOverride = nil
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/devices/register") == true {
+                return jsonResponse(200, json: [
+                    "device": [
+                        "app": "com.test.app", "did": "any", "status": "idle",
+                        "lastSeenAt": "2026-09-19T00:00:00Z",
+                        "registeredAt": "2026-09-19T00:00:00Z",
+                    ],
+                    "serverConfig": ["heartbeatIntervalSeconds": 3, "heartbeatTimeoutSeconds": 60],
+                ])
+            }
+            return jsonResponse(200, json: [
+                "ok": true, "serverTime": "2026-09-19T00:00:01Z",
+                "serverConfig": ["heartbeatIntervalSeconds": 3, "heartbeatTimeoutSeconds": 60],
+                "session": nil as Any?, "rulesVersion": 0,
+            ])
+        }
+
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m9", osVersion: "17.5")
+
+        waitUntil(timeout: 4) { self.heartbeatCalls >= 1 }
+        let t1 = ProcessInfo.processInfo.systemUptime
+        waitUntil(timeout: 10) { self.heartbeatCalls >= 2 }
+        let gap = ProcessInfo.processInfo.systemUptime - t1
+        XCTAssertGreaterThanOrEqual(gap, 2.0,
+            "第二次起心跳间隔应采纳服务端 capturing 3s（实测 \(gap)s）")
+        XCTAssertLessThan(gap, 4.5,
+            "3s 不得被钳制抬成 5s（旧钳制下限 5 会让 gap≈5s；实测 \(gap)s）")
+    }
+
+    // 4.13 回归：携带配对令牌注册收到 403（pairing_token_invalid）→ 停止循环并
+    // 上抛 .tokenInvalid（可展示「二维码已过期」），绝不退避重试同一枚过期令牌。
+    func testRegister403_WithPairingToken_StopsAndSurfacesTokenInvalid() {
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/devices/register") == true {
+                return jsonResponse(403, json: ["error": "pairing_token_invalid", "message": "token expired"])
+            }
+            return jsonResponse(200, json: heartbeatResponseJSON(session: nil))
+        }
+
+        controller.start(server: serverURL, appID: appID, appVersion: nil,
+                         sdkVersion: "0.2.0-m9", osVersion: "17.5",
+                         pairingToken: "stale-token", deviceName: "Test iPhone")
+
+        waitUntil { self.controller.connectionState == .tokenInvalid }
+
+        // 不再产生新的 register / heartbeat（不再无限退避重连）。
+        let frozenReg = registerCalls
+        let frozenHb = heartbeatCalls
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertEqual(registerCalls, frozenReg, "403 后不应再重新注册")
+        XCTAssertEqual(heartbeatCalls, frozenHb, "403 后不应再心跳")
+    }
+
+    // 4.13 对照：未携带配对令牌的 403 保持原有退避语义（不误伤其它 403 场景）。
+    func testRegister403_WithoutPairingToken_KeepsBackoff() {
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/devices/register") == true {
+                return jsonResponse(403, json: ["error": "forbidden"])
+            }
+            return jsonResponse(200, json: heartbeatResponseJSON(session: nil))
+        }
+
+        controller.start(server: serverURL, appID: appID, appVersion: nil,
+                         sdkVersion: "0.2.0-m9", osVersion: "17.5")
+
+        // 无令牌 403 → 仍按退避重试（状态 offline，循环继续）。
+        waitUntil { self.controller.connectionState == .offline && self.registerCalls >= 2 }
+        XCTAssertNotEqual(controller.connectionState, .tokenInvalid)
     }
 
     // MARK: - M2.4 采集联动
@@ -298,5 +409,20 @@ final class ConnectionControllerTests: XCTestCase {
 
         controller.stop()
         XCTAssertFalse(TrafficCaptureController.shared.isCapturing)
+    }
+
+    /// 4.20 回归：默认构造复用进程级共享 URLSession（不再每次心跳 new
+    /// session）；注入 configuration 的测试路径仍创建专用 session。
+    func testConnectionClientReusesSharedSession() {
+        let a = ConnectionClient(baseURL: serverURL)
+        let b = ConnectionClient(baseURL: serverURL)
+        XCTAssertTrue(a.session === b.session,
+            "default clients must share the process-wide URLSession (4.20)")
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let c = ConnectionClient(configuration: config, baseURL: serverURL)
+        XCTAssertFalse(c.session === a.session,
+            "injected configuration must keep its own session (test isolation)")
     }
 }
