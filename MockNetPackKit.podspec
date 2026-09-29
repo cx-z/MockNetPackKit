@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'MockNetPackKit'
-  s.version          = '1.0.0'
+  s.version          = '1.0.1'
   s.summary          = 'MockNetPack iOS SDK. HTTP capture & remote mock, integrated by the host app.'
   s.description      = <<-DESC
 MockNetPackKit is the client SDK for the internal HTTP capture & Mock platform.
@@ -13,7 +13,7 @@ host app; the integrating app links this pod in Debug configuration only.
   s.license          = { :type => 'Proprietary' }
   s.author           = { 'MockNetPack' => 'dev@mocknetpack.local' }
   s.source           = { :git => 'https://github.com/cx-z/MockNetPackKit.git', :tag => '1.0.0' }
-  s.ios.deployment_target = '15.0'
+  s.ios.deployment_target = '13.0'
   s.swift_version    = '5.0'
   s.source_files     = 'Sources/MockNetPackKit/**/*.{swift}'
   s.frameworks       = 'Foundation', 'AVFoundation'   # M9.2 扫码连接（AVCaptureSession）

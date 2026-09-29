@@ -197,8 +197,9 @@ public enum MockNetPackKit {
     #if canImport(UIKit)
     public static func connectByScan(from presenter: UIViewController,
                                      completion: @escaping @Sendable (Result<Void, ConnectByScanError>) -> Void) {
-        let scanner = QRScannerViewController(presentingFrom: presenter)
         Task { @MainActor in
+            // 扫码控制器为 @MainActor 隔离，须在 MainActor 上构造。
+            let scanner = QRScannerViewController(presentingFrom: presenter)
             let result = await Self.connectByScan(scanner: scanner)
             // M9.3-fix：扫码流程结束（成功/失败）兜底收起扫码面板，防 dismiss 竞态静默失败。
             scanner.dismissIfPresented()

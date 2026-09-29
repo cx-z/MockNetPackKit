@@ -17,7 +17,9 @@ protocol QRScanProviding: Sendable {
 }
 
 #if canImport(UIKit)
-import AVFoundation
+// AVFoundation 未声明 Sendable，但 AVCaptureSession 可从后台线程操作
+// （startRunning 阻塞调用）；@preconcurrency 将 Sendable 相关检查降级为警告。
+@preconcurrency import AVFoundation
 import UIKit
 
 /// 原生相机扫码视图控制器（M9.2，D2/D3 拍板：原生实现、集成进 SDK、iOS 15 兼容）。
@@ -131,9 +133,14 @@ final class QRScannerViewController: UIViewController, @unchecked Sendable, QRSc
 
     private func startSession() {
         // startRunning 是阻塞调用，放后台队列；预览由预览层自动渲染。
+        // 后台闭包不得触碰 @MainActor 隔离属性：先快照 session/finished，
+        // 再以弱引用保留「控制器已释放则不再启动采集」的语义。
+        let session = self.session
+        let finished = self.finished
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self, !self.finished else { return }
-            self.session.startRunning()
+            guard !finished else { return }
+            guard self != nil else { return }
+            session.startRunning()
         }
     }
 
@@ -158,16 +165,20 @@ final class QRScannerViewController: UIViewController, @unchecked Sendable, QRSc
 // MARK: - AVCaptureMetadataOutputObjectsDelegate
 
 extension QRScannerViewController: AVCaptureMetadataOutputObjectsDelegate {
-    func metadataOutput(_ output: AVCaptureMetadataOutput,
-                        didOutput metadataObjects: [AVMetadataObject],
-                        from connection: AVCaptureConnection) {
-        guard let code = metadataObjects
-            .compactMap({ $0 as? AVMetadataMachineReadableCodeObject })
-            .first,
-            let value = code.stringValue else {
-            return
+    nonisolated func metadataOutput(_ output: AVCaptureMetadataOutput,
+                                    didOutput metadataObjects: [AVMetadataObject],
+                                    from connection: AVCaptureConnection) {
+        // delegate 队列固定为 .main（setMetadataObjectsDelegate(_:queue:)），回调必然
+        // 落在主线程；但 conformance 对协议而言是 nonisolated，须显式回到 MainActor
+        // 再触碰 @MainActor 隔离状态（finish/continuation）。先取出 Sendable 的
+        // 二维码文本，避免把非 Sendable 的 metadataObjects 传入闭包。
+        let value = metadataObjects
+            .compactMap { $0 as? AVMetadataMachineReadableCodeObject }
+            .first?.stringValue
+        MainActor.assumeIsolated {
+            guard let value else { return }
+            finish(value)
         }
-        finish(value)
     }
 }
 #endif

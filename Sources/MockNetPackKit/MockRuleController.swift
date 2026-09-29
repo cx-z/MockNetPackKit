@@ -46,12 +46,10 @@ final class MockRuleController: @unchecked Sendable {
                 "devices/\(app)/\(did)/mock-rules?sinceVersion=\(since)",
                 as: MockRuleList.self)
             apply(list: list)
-            Logger(subsystem: "com.mocknetpack.kit", category: "mock").info(
-                "rules synced version=\(list.version) active=\(list.rules.count)")
+            SDKLog.info("rules synced version=\(list.version) active=\(list.rules.count)", category: "mock")
         } catch {
             // fail-open A：拉取失败，沿用旧快照（首次失败则本地仍为空，即不 Mock）。
-            Logger(subsystem: "com.mocknetpack.kit", category: "mock").error(
-                "rules pull failed: \(error.localizedDescription, privacy: .public); keeping snapshot")
+            SDKLog.error("rules pull failed: \(error.localizedDescription); keeping snapshot", category: "mock")
         }
     }
 

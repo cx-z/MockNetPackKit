@@ -471,10 +471,12 @@ final class ConnectionController: @unchecked Sendable {
         }
     }
 
+    /// 输出一条 SDK 日志：先经注入的 logHandler（宿主/测试捕获），
+    /// 再落 OSLog（SDKLog，iOS 13 兼容包装）。
     private func log(_ message: String) {
         let handler = withLock { logHandler }
         handler?(message)
-        Logger(subsystem: "com.mocknetpack.kit", category: "connection").info("\(message, privacy: .public)")
+        SDKLog.info(message, category: "connection")
     }
 }
 

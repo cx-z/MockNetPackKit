@@ -10,6 +10,8 @@ enum ConnectionClientError: Error {
     case decoding(Error)
     /// 无法构造 URL。
     case invalidURL
+    /// 响应数据与错误均为空（正常路径不应出现）。
+    case invalidResponse
 }
 
 /// 极简 JSON HTTP 客户端。
@@ -51,6 +53,25 @@ struct ConnectionClient: Sendable {
         return URLSession(configuration: config)
     }()
 
+    /// 发起 URLSession 请求并以 async/await 返回原始响应。
+    ///
+    /// 统一走 completion-handler 版 `dataTask(with:)` 并桥接 Continuation：
+    /// `URLSession.data(for:)`（async 版）仅 iOS 15+ 可用，而 SDK 最低部署
+    /// 目标为 iOS 13，低版本设备经此路径执行；超时与网络错误原样上抛。
+    private func perform(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            session.dataTask(with: request) { data, response, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let data, let response {
+                    continuation.resume(returning: (data, response))
+                } else {
+                    continuation.resume(throwing: ConnectionClientError.invalidResponse)
+                }
+            }.resume()
+        }
+    }
+
     /// 发起 JSON POST 并解码响应。
     func post<Body: Encodable, Resp: Decodable>(
         _ path: String,
@@ -84,7 +105,7 @@ struct ConnectionClient: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await perform(request)
         } catch {
             throw error  // 网络层错误原样上抛（ConnectionController 据此退避重连）
         }
@@ -119,7 +140,7 @@ struct ConnectionClient: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await perform(request)
         } catch {
             throw error
         }
