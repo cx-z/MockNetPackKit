@@ -36,6 +36,9 @@ final class TrafficCaptureController: @unchecked Sendable {
 
     private var running = false
     private var capturingValue = false
+    /// URLProtocol 注入是否已安装（arm/start 共用，锁保护）：启动早期已由 arm()
+    /// 预注入时，start() 不再重复 install/registerClass，避免重复注册同一拦截器类。
+    private var injectedValue = false
     private var sessionIDValue: String?
     private var appIDValue: String?
     private var didValue: String?
@@ -191,6 +194,28 @@ final class TrafficCaptureController: @unchecked Sendable {
 
     // MARK: - 生命周期
 
+    /// 预注入（连接层 unconfigured 启动时调用；幂等）：仅安装 URLProtocol 注入，
+    /// 不启动采集、不发起网络。目的：首次接入（无已保存服务器地址）的 App 在扫码
+    /// 连接之前创建的 URLSession（如 FDNetworkCore 的 AF 单例 session）也携带拦截器，
+    /// 避免"单例 session 先于注入创建而全程漏抓"。未连接时 isCapturing=false，
+    /// canInit fail-open，业务零干预；扫码连接后由 start()/心跳驱动接管。
+    func arm() {
+        ensureInjected()
+        log("URLProtocol armed (pre-connect injection installed)")
+    }
+
+    /// 安装 URLProtocol 注入（arm/start 共用；幂等，锁保护判定）：swizzle
+    /// URLSessionConfiguration 类构造方法（默认/临时会话携带拦截器），并注册全局类
+    /// （NSURLConnection 时代兜底）。会话未激活时 canInit 返回 false。
+    private func ensureInjected() {
+        lock.lock()
+        guard !injectedValue else { lock.unlock(); return }
+        injectedValue = true
+        lock.unlock()
+        URLSessionConfigurationInjector.install()
+        URLProtocol.registerClass(MockNetPackURLProtocol.self)
+    }
+
     /// 启动采集（连接层 start 时调用；幂等）。注册全局 URLProtocol。
     func start(serverURL: URL, appID: String, did: String, logHandler: (@Sendable (String) -> Void)? = nil) {
         lock.lock()
@@ -204,10 +229,8 @@ final class TrafficCaptureController: @unchecked Sendable {
         pendingBytes = 0
         lock.unlock()
 
-        // 注入：swizzle URLSessionConfiguration 类构造方法（默认/临时会话携带拦截器），
-        // 并注册全局类（NSURLConnection 时代兜底）。会话未激活时 canInit 返回 false。
-        URLSessionConfigurationInjector.install()
-        URLProtocol.registerClass(MockNetPackURLProtocol.self)
+        // 注入（幂等）：若启动早期已由 arm() 预注入则跳过，避免重复注册拦截器类。
+        ensureInjected()
         scheduleFlush()
         log("traffic capture started (URLProtocol injected)")
     }
@@ -226,6 +249,9 @@ final class TrafficCaptureController: @unchecked Sendable {
         // 还原注入、注销全局类；已创建会话的拦截由 canInit 静态开关兜底（stop 后 false）。
         URLSessionConfigurationInjector.uninstall()
         URLProtocol.unregisterClass(MockNetPackURLProtocol.self)
+        lock.lock()
+        injectedValue = false   // 允许 stop 后再次 start/arm 时重新注入
+        lock.unlock()
         log("traffic capture stopped")
     }
 

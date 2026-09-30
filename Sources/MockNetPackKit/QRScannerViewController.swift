@@ -49,16 +49,28 @@ final class QRScannerViewController: UIViewController, @unchecked Sendable, QRSc
     // MARK: - QRScanProviding
 
     func scanQRCode() async throws -> String? {
-        // 1) 相机权限（首次弹窗；拒绝 → cameraDenied）。
+        // 1) 相机权限（首次弹窗；拒绝 → cameraDenied）。已由 connectByScan 预授权
+        // （M11）时此处幂等返回 authorized；保留本检查兜底其他调用路径。
         let granted = try await Self.requestCameraAccess()
         guard granted else { throw QRScanError.cameraDenied }
 
         // 2) 配置采集会话（模拟器无摄像头 → cameraUnavailable）。
-        guard let device = AVCaptureDevice.default(for: .video),
-              let input = try? AVCaptureDeviceInput(device: device),
-              session.canAddInput(input) else {
-            throw QRScanError.cameraUnavailable
+        // M11-fix：首次授权后 AVFoundation 授权状态传播有延迟——授权回调返回的
+        // 瞬间 AVCaptureDeviceInput(device:) 仍可能抛 "未授权"（-11819）。对 input
+        // 创建做有限重试（0.3s 间隔 ×3），避免把"授权刚完成"误判为"相机不可用"。
+        var input: AVCaptureDeviceInput?
+        for attempt in 0..<3 {
+            if let device = AVCaptureDevice.default(for: .video),
+               let candidate = try? AVCaptureDeviceInput(device: device),
+               session.canAddInput(candidate) {
+                input = candidate
+                break
+            }
+            if attempt < 2 {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
         }
+        guard let input else { throw QRScanError.cameraUnavailable }
         session.addInput(input)
         let output = AVCaptureMetadataOutput()
         guard session.canAddOutput(output) else { throw QRScanError.cameraUnavailable }
@@ -144,7 +156,9 @@ final class QRScannerViewController: UIViewController, @unchecked Sendable, QRSc
         }
     }
 
-    private static func requestCameraAccess() async throws -> Bool {
+    /// 相机权限检查/请求（首次弹窗；拒绝 → false）。幂等：已授权直接返回 true。
+    /// internal 供 connectByScan（M11）在进入相机页前预授权——授权弹窗与扫码页解耦。
+    static func requestCameraAccess() async throws -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             return true

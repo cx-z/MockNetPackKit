@@ -187,8 +187,8 @@ public enum MockNetPackKit {
         ServerAddressStore.clear(forApp: bundleID)
     }
 
-    /// 扫码连接（M9.2，iOS）：调起相机扫码 → 解析校验 → 携带配对令牌注册
-    /// （一次完成可达性 + 令牌校验）→ 成功则持久化地址并启动连接。
+    /// 扫码连接（M9.2，iOS）：**先请求相机权限（预授权，M11）** → 调起相机扫码 →
+    /// 解析校验 → 携带配对令牌注册（一次完成可达性 + 令牌校验）→ 成功则持久化地址并启动连接。
     /// 已连接时（D6）直接切换到新服务器，旧服务器设备记录保留、心跳超时自然离线。
     /// 失败（R1.6）不覆盖已保存地址。
     /// - Parameters:
@@ -198,6 +198,21 @@ public enum MockNetPackKit {
     public static func connectByScan(from presenter: UIViewController,
                                      completion: @escaping @Sendable (Result<Void, ConnectByScanError>) -> Void) {
         Task { @MainActor in
+            // M11-fix：进入相机页前先请求相机权限（授权弹窗与扫码页解耦）：
+            // 首次授权后 AVFoundation 授权状态传播有延迟，若在扫码页内授权并立即
+            // 建 session 易误判"相机不可用"。此处预授权 + 短暂等待传播就绪，再 present。
+            let granted: Bool
+            do {
+                granted = try await QRScannerViewController.requestCameraAccess()
+            } catch {
+                granted = false
+            }
+            guard granted else {
+                completion(.failure(.cameraDenied))
+                return
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+
             // 扫码控制器为 @MainActor 隔离，须在 MainActor 上构造。
             let scanner = QRScannerViewController(presentingFrom: presenter)
             let result = await Self.connectByScan(scanner: scanner)
@@ -236,10 +251,18 @@ public enum MockNetPackKit {
             return .failure(.invalidPayload)
         }
 
-        // 3) 令牌注册（可达性 + 令牌校验二合一）。did 复用（D7）：与启动注册同一 did。
+        // 3) 本地网络可达性探测（M11-2）：iOS 首次访问局域网地址会触发「本地网络」
+        // 权限弹窗，未授权期间连接被系统拒绝——若直接注册，首次扫码必然失败
+        // （unreachable）需二次扫码。先发轻量探测（收到任何 HTTP 响应即视为连通，
+        // 传输层错误自动重试给授权留时间）；仍失败返回 unreachable。
+        let client = makeClient?(payload.serverURL) ?? ConnectionClient(baseURL: payload.serverURL)
+        guard await Self.probeLocalNetwork(client: client) else {
+            return .failure(.unreachable)
+        }
+
+        // 4) 令牌注册（可达性 + 令牌校验二合一）。did 复用（D7）：与启动注册同一 did。
         let appID = ConnectionController.shared.resolvedAppID ?? bundleID
         let did = ConnectionController.shared.did ?? DIDStore.did(forApp: appID)
-        let client = makeClient?(payload.serverURL) ?? ConnectionClient(baseURL: payload.serverURL)
         let req = RegisterDeviceRequest(
             app: appID,
             did: did,
@@ -271,6 +294,31 @@ public enum MockNetPackKit {
             sdkVersion: version,
             osVersion: osVersion)
         return .success(())
+    }
+
+    /// 本地网络可达性探测（M11-2）：对服务器地址发轻量 GET（必然 404 路径），
+    /// 收到任何 HTTP 响应即视为网络连通且 iOS「本地网络」权限已就绪；传输层
+    /// 错误（权限未授权/网络不可达）按固定间隔自动重试，给首次授权弹窗留出
+    /// 操作时间。重试上限内任意一次成功即返回 true。
+    /// - Parameters:
+    ///   - client: 指向扫码 payload 服务器地址的连接客户端。
+    ///   - attempts: 最大尝试次数。
+    ///   - interval: 失败重试间隔（秒）。
+    /// - Returns: 探测是否成功。
+    private static func probeLocalNetwork(client: ConnectionClient,
+                                          attempts: Int = 4,
+                                          interval: TimeInterval = 1.5) async -> Bool {
+        for attempt in 0..<attempts {
+            do {
+                try await client.probe()
+                return true
+            } catch {
+                if attempt < attempts - 1 {
+                    try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                }
+            }
+        }
+        return false
     }
 
     // MARK: - 系统信息

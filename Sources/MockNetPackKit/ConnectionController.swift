@@ -120,7 +120,9 @@ final class ConnectionController: @unchecked Sendable {
             logHandler: self.logHandler)
     }
 
-    /// 无服务器启动（M9.2）：仅解析 did 并置 `.unconfigured`，不发起网络、不启动采集。
+    /// 无服务器启动：仅解析 did 并置 `.unconfigured`，不发起网络、不启动采集；
+    /// 但预注入 URLProtocol（TrafficCaptureController.arm()），保证首次接入 App 在
+    /// 扫码连接之前创建的 URLSession 也携带拦截器（扫码激活后即可全量抓取）。
     /// 供 `start()` 无参门面在未保存地址时调用——保证后续扫码复用同一 did（D7：
     /// 扫码注册与启动注册使用同一设备标识，不因扫码新生成）。
     func startUnconfigured(appID: String?,
@@ -149,6 +151,10 @@ final class ConnectionController: @unchecked Sendable {
         lock.unlock()
 
         log("MockNetPackKit unconfigured: no saved server address (scan to connect)")
+        // 预注入：首次接入（无已保存地址）启动也安装 URLProtocol 注入，保证扫码
+        // 连接前创建的 URLSession（FDNetworkCore 等单例 session）携带拦截器；
+        // 未连接时 isCapturing=false 不拦业务，扫码激活后即全量抓取。
+        TrafficCaptureController.shared.arm()
         setConnectionState(.unconfigured)
     }
 

@@ -156,4 +156,21 @@ struct ConnectionClient: Sendable {
             throw ConnectionClientError.decoding(error)
         }
     }
+
+    /// 轻量可达性探测（M11-2）：GET 一个必然 404 的路径，收到任何 HTTP 响应
+    /// （含 404）即视为连通——用于扫码连接前触发/验证 iOS「本地网络」权限
+    /// （首次访问局域网地址的连接会因未授权被系统拒绝，传输层错误在此上抛）。
+    func probe() async throws {
+        let base = baseURL.absoluteString.hasSuffix("/")
+            ? baseURL.absoluteString
+            : baseURL.absoluteString + "/"
+        guard let url = URL(string: base + "__mocknetpack_probe__") else {
+            throw ConnectionClientError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 3
+        request.setValue("1", forHTTPHeaderField: MockNetPackURLProtocol.skipHeader)
+        _ = try await perform(request)
+    }
 }
