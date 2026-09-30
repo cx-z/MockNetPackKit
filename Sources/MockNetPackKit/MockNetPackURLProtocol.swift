@@ -170,7 +170,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         for (key, value) in request.allHTTPHeaderFields ?? [:] {
             reqHeaders[key] = [value]
         }
-        let entry = TrafficEntry(
+        var entry = TrafficEntry(
             timestamp: startTime,
             method: method,
             url: url.absoluteString,
@@ -188,6 +188,12 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             durationMs: max(0, Int(Date().timeIntervalSince(startTime) * 1000)),
             mocked: true
         )
+        // mock 命中流量同样尝试解码展示（与真实抓包一致，仅展示；回放仍为
+        // bodyBase64 原始字节）。二进制规则（"Mock 此请求"创建）未编辑时 body 是
+        // "[binary N bytes]" 占位，补上解码文本后请求流里也能看到 JSON 详情。
+        if !data.isEmpty {
+            entry.responseBodyDecoded = Self.decodedBody(data, contentType: contentType)
+        }
         TrafficCaptureController.shared.record(entry)
 
         guard let response else {

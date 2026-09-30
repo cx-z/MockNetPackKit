@@ -343,6 +343,88 @@ final class MockRuleTests: XCTestCase {
         XCTAssertEqual(received.value, Data(#"{"ok":true}"#.utf8))
     }
 
+    // MARK: - 19 位整数 ID 精度（回归）
+
+    /// 增量拉取解码：body 字符串中的大整数 ID 必须逐位保留，不被
+    /// 数值类型转换舍入（复现：1473156146373935104 → 1473156146373935000）。
+    func testSyncDecodePreservesBigIntIDs() async throws {
+        let exactStoryID = "1473156146373935104"
+        let exactChatID = "1576844185645694976"
+        let roundedStory = "1473156146373935000"
+        let roundedChat = "1576844185645695000"
+        let body = #"{"ret":1,"data":{"sessions":[{"session_id":1473156146373935104,"unread":0}],"active_session_list":[1576844185645694976],"wangliao_active_list":[1576844185645694976]}}"#
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = ConnectionClient(configuration: config, baseURL: serverURL)
+        let appID = self.appID
+        let did = self.did
+
+        MockURLProtocol.handler = { request in
+            XCTAssertTrue(request.url?.path.hasSuffix("/mock-rules") == true)
+            return jsonResponse(200, json: [
+                "version": 7,
+                "rules": [[
+                    "id": "r1", "app": appID, "did": did,
+                    "method": "POST", "path": "/chat/sessions_v2",
+                    "response": ["statusCode": 200, "body": body],
+                    "enabled": true, "effective": true,
+                ]],
+            ])
+        }
+
+        await MockRuleController.shared.syncIfNeeded(client: client, app: appID, did: did, serverVersion: 7)
+
+        guard let served = MockRuleController.shared.match(method: "POST", path: "/chat/sessions_v2") else {
+            return XCTFail("规则应已入快照")
+        }
+        XCTAssertTrue(served.body?.contains(exactStoryID) == true, "故事会话 ID 必须逐位保留")
+        XCTAssertTrue(served.body?.contains(exactChatID) == true, "网聊会话 ID 必须逐位保留")
+        XCTAssertFalse(served.body?.contains(roundedStory) == true, "不得出现舍入形态 \(roundedStory)")
+        XCTAssertFalse(served.body?.contains(roundedChat) == true, "不得出现舍入形态 \(roundedChat)")
+    }
+
+    /// 实际 Mock 下发（无 encoder 的纯文本 JSON 接口）：下发的字节必须与
+    /// 规则体原文逐字节一致，ID 仍是数字字面量（不转字符串、不舍入）。
+    func testServeDeliversBigIntIDsByteExact() throws {
+        let controller = TrafficCaptureController.shared
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-prec")
+
+        // 不配 encoder（纯文本 JSON 直传路径）。
+        let body = #"{"ret":1,"data":{"sessions":[{"session_id":1473156146373935104,"unread":0}],"active_session_list":[1576844185645694976],"wangliao_active_list":[1576844185645694976]}}"#
+        MockRuleController.shared.applyForTesting(rules: [MockRule(
+            id: "r1", method: "POST", path: "/chat/sessions_v2",
+            response: MockResponse(statusCode: 200,
+                headers: ["Content-Type": "application/json"],
+                body: body),
+            enabled: true, effective: true)], version: 1)
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { _ in XCTFail("命中 Mock 不应转发"); return jsonResponse(200, json: [:]) }
+
+        var req = URLRequest(url: URL(string: "https://api.example.com/chat/sessions_v2")!)
+        req.httpMethod = "POST"
+        let received = Box<Data?>(nil)
+        let exp = expectation(description: "bigint mock")
+        businessSession().dataTask(with: req) { data, _, _ in
+            received.value = data
+            exp.fulfill()
+        }.resume()
+        wait(for: [exp], timeout: 3)
+
+        XCTAssertEqual(received.value, Data(body.utf8), "下发字节必须与规则体原文逐字节一致")
+        // 附加语义断言：接收方可按完整 Int64 精确匹配两个会话 ID。
+        let parsed = try? JSONSerialization.jsonObject(with: received.value ?? Data()) as? [String: Any]
+        let sessions = (parsed?["data"] as? [String: Any])?["sessions"] as? [[String: Any]]
+        let sessionID = sessions?.first?["session_id"] as? NSNumber
+        XCTAssertEqual(sessionID?.int64Value, Int64("1473156146373935104"), "客户端按完整 Int64 匹配的 ID 必须等于原值")
+        let activeList = (parsed?["data"] as? [String: Any])?["active_session_list"] as? [NSNumber]
+        XCTAssertEqual(activeList?.first?.int64Value, Int64("1576844185645694976"), "active_session_list 首项必须等于原值")
+    }
+
     // MARK: - 辅助
 
     private final class Box<T>: @unchecked Sendable {
