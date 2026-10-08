@@ -47,7 +47,7 @@ The SDK is a small set of **singletons with lock-protected state**, orchestrated
 | `DIDStore` | enum | did generation (UUID) + per-app `UserDefaults` persistence |
 | `ServerAddressStore` | enum |  server-address persistence (`mocknetpack.server.v1.<appID>`, same pattern as `DIDStore`) — saved by scan, read by `start()` for direct connect |
 | `QRConnectParser` | enum |  parses `mocknetpack://connect?v=1&u=<base64url>&a=<appID>&t=<token>` (scheme/version/http(s)+host/appID match/token); `QRConnectPayload` |
-| `QRScannerViewController` | class (UIViewController, iOS-only) |  native AVCaptureSession QR scan, camera permission (denied/unavailable), `QRScanProviding` protocol seam for test injection — **v1.4：`finish()` dismiss 前置 + `dismissIfPresented()` 兜底（扫码流程结束由 connectByScan 调用，防面板静默不收起）**；宿主 Debug 包需 `NSCameraUsageDescription` + `NSLocalNetworkUsageDescription`（iOS 14+ 访问局域网需授权；均 Debug-only 注入，Release 不含，v1.2） |
+| `QRScannerViewController` | class (UIViewController, iOS-only) | native AVCaptureSession QR scan, camera permission (denied/unavailable), `QRScanProviding` protocol seam for test injection — **v1.4: `finish()` dismiss happens first + `dismissIfPresented()` fallback (called by `connectByScan` when the scan flow ends, so the panel is never left silently open)**; the host Debug build needs `NSCameraUsageDescription` + `NSLocalNetworkUsageDescription` (iOS 14+ requires authorization to reach the LAN; both are Debug-only injections, absent from Release, v1.2) |
 | `BinaryCodec` | Data extension | Standard gzip compression (zlib) used by the encrypt path |
 
 ## Concurrency model
@@ -78,12 +78,12 @@ MockNetPackKit.start(server:)
           404 → unregistered = true, stop loop (no retry)
           err → offline; exponential backoff 1s→30s; scheduleNext(delay: backoff)
 
-（v0.13.0）：服务端 TrafficEntry 新增 seq（每会话自增到达序号，增量游标），
-由服务端在 UploadTraffic 时按到达顺序盖章——SDK 上传不携带、不感知、不消费；
-Web/MCP/CLI 查询侧使用，SDK 契约（register/heartbeat/upload/mock-rules pull）不变。
-（v0.13.0）：命中流量新增 matchedRuleId 上报——MockRuleController.match
-把命中规则 ID 写入 MockResponse.ruleId，serve 记入 TrafficEntry.matchedRuleId；
-仅 mocked=true 非空，Web 展示与回放语义不变。
+(v0.13.0): the server's TrafficEntry gains `seq` (a per-session arrival sequence number acting as an incremental cursor),
+stamped by the server in arrival order during UploadTraffic — the SDK does not carry, see, or consume it;
+it is used by the Web/MCP/CLI query side; the SDK contract (register/heartbeat/upload/mock-rules pull) is unchanged.
+(v0.13.0): hit traffic additionally reports matchedRuleId — MockRuleController.match
+writes the matched rule's ID into MockResponse.ruleId, and serve records it into TrafficEntry.matchedRuleId;
+it is non-empty only when mocked=true; Web display and replay semantics are unchanged.
 ```
 
 ### 2. Capture lifecycle (session-driven)
@@ -157,7 +157,7 @@ Failure: saved address untouched (R1.6)
 start(did:)  ( no-arg launch)
   → saved address? → start(server:, did:)   // direct connect, no scan needed (A2)
   → none         → startUnconfigured()      // resolves did only; .unconfigured, no network
-did = externalDID (e.g. 业务方 UIDevice.deviceID) ?? DIDStore — scan register reuses the SAME did 
+did = externalDID (e.g. the business app's UIDevice.deviceID) ?? DIDStore — scan register reuses the SAME did 
 ```
 
 ## Fail-open guarantees

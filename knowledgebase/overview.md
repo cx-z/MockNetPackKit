@@ -7,7 +7,7 @@
 
 `MockNetPackKit` is the **iOS Debug SDK** of MockNetPack: an in-app HTTP capture and remote-mock client embedded in the business app's **Debug build only**. It captures every HTTP request/response made by the app process, uploads them to the central mock server, and — while a capture session is active — returns server-configured mock responses *locally in the app* for matching requests. No system proxy, no certificate, no business-network-layer changes: interception is installed by swizzling `URLSessionConfiguration` and registering a global `URLProtocol`.
 
-The SDK is a **Swift Package** (`Package.swift`) that also ships as a **CocoaPods pod** (`MockNetPackKit.podspec`, version `1.0.2`).
+The SDK is a **Swift Package** (`Package.swift`) that also ships as a **CocoaPods pod** (`MockNetPackKit.podspec`, version `1.0.3`).
 
 ## Role in the product
 
