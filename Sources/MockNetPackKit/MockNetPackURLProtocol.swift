@@ -186,7 +186,8 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             responseBodyBase64: mock.bodyBase64,
             error: nil,
             durationMs: max(0, Int(Date().timeIntervalSince(startTime) * 1000)),
-            mocked: true
+            mocked: true,
+            matchedRuleId: mock.ruleId
         )
         // mock 命中流量同样尝试解码展示（与真实抓包一致，仅展示；回放仍为
         // bodyBase64 原始字节）。二进制规则（"Mock 此请求"创建）未编辑时 body 是

@@ -127,6 +127,9 @@ struct TrafficEntry: Encodable {
     /// 命中 Mock 规则回包时为 true（契约 v0.3.0；服务端在 Web 请求流标注
     /// “Mock 命中”）。走真实网络时为 false。
     var mocked: Bool = false
+    /// 命中的规则 ID（M12.3 P1-1）：仅 mocked=true 时非空，用于确认请求究竟
+    /// 命中哪一条规则；真实流量为 nil。
+    var matchedRuleId: String?
 }
 
 /// 批量上传请求（契约 TrafficUploadRequest；单批 ≤500 条，由 SDK 攒批控制）。
@@ -154,6 +157,9 @@ struct MockResponse: Codable, Equatable {
     var body: String?
     /// 二进制回包 base64；存在时按原始字节回包，body 仅作展示。
     var bodyBase64: String?
+    /// 命中该回包的规则 ID（M12.3 P1-1：match 时填充，随命中流量上报
+    /// matchedRuleId）。解码自服务端时不携带，仅本地匹配后设置。
+    var ruleId: String?
 }
 
 /// 一条设备级 Mock 规则（契约 MockRule）。SDK 侧只关心匹配与回包字段；

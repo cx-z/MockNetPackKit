@@ -77,6 +77,13 @@ MockNetPackKit.start(server:)
                  scheduleNext(delay: heartbeatInterval())
           404 → unregistered = true, stop loop (no retry)
           err → offline; exponential backoff 1s→30s; scheduleNext(delay: backoff)
+
+M12（v0.13.0）：服务端 TrafficEntry 新增 seq（每会话自增到达序号，增量游标），
+由服务端在 UploadTraffic 时按到达顺序盖章——SDK 上传不携带、不感知、不消费；
+Web/MCP/CLI 查询侧使用，SDK 契约（register/heartbeat/upload/mock-rules pull）不变。
+M12.3（v0.13.0）：命中流量新增 matchedRuleId 上报——MockRuleController.match
+把命中规则 ID 写入 MockResponse.ruleId，serve 记入 TrafficEntry.matchedRuleId；
+仅 mocked=true 非空，Web 展示与回放语义不变。
 ```
 
 ### 2. Capture lifecycle (session-driven)
@@ -113,7 +120,7 @@ URLProtocol.startLoading
       body = bodyBase64 (raw bytes)          // ① unedited binary rule — replay exact bytes
            | encoder(bodyText, contentType)  // ② edited text → re-encode via codec
            | UTF-8 text                      // ③ plain text
-      record TrafficEntry(mocked: true, request body captured for display)
+      record TrafficEntry(mocked: true, matchedRuleId: <rule id>, request body captured for display)
       deliver HTTPURLResponse to the URLProtocol client
 ```
 

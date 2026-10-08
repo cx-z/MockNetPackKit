@@ -72,12 +72,15 @@ final class MockRuleController: @unchecked Sendable {
     // MARK: - 匹配
 
     /// 按 Method + URL 路径查找本地生效规则；无匹配返回 nil（走真实网络）。
+    /// M12.3 P1-1：命中时把规则 ID 写入 response.ruleId，随命中流量上报 matchedRuleId。
     func match(method: String, path: String) -> MockResponse? {
         lock.lock()
         defer { lock.unlock() }
         let m = method.uppercased()
         for r in rules where r.method.uppercased() == m && r.path == path {
-            return r.response
+            var resp = r.response
+            resp.ruleId = r.id
+            return resp
         }
         return nil
     }

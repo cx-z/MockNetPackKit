@@ -343,6 +343,74 @@ final class MockRuleTests: XCTestCase {
         XCTAssertEqual(received.value, Data(#"{"ok":true}"#.utf8))
     }
 
+    // MARK: - 手填规则回放
+
+    /// 手填规则（response 纯文本 body、无 bodyBase64）controller 级命中，
+    /// 状态码/body 原样返回。
+    func testHandAuthoredRuleControllerMatch() throws {
+        MockRuleController.shared.applyForTesting(rules: [MockRule(
+            id: "r-hand", method: "GET", path: "/api/hello",
+            response: MockResponse(statusCode: 201,
+                headers: ["Content-Type": "application/json"],
+                body: #"{"msg":"hand-written"}"#),
+            enabled: true, effective: true)], version: 1)
+
+        let resp = try XCTUnwrap(
+            MockRuleController.shared.match(method: "get", path: "/api/hello"),
+            "手填规则应命中（method 大小写不敏感）")
+        XCTAssertEqual(resp.statusCode, 201)
+        XCTAssertEqual(resp.body, #"{"msg":"hand-written"}"#)
+        XCTAssertNil(resp.bodyBase64, "手填规则不带 bodyBase64")
+    }
+
+    /// 手填规则（文本 body）与二进制规则（bodyBase64）共存于同一快照时，
+    /// 各自按自己的回放分支出字节，互不串味（① 原始字节优先不被 ③ 文本路径破坏）。
+    func testHandAuthoredAndBinaryRulesCoexist() throws {
+        let controller = TrafficCaptureController.shared
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-m11")
+        // 不配 encoder：手填规则走 ③ UTF-8 文本；二进制规则走 ① bodyBase64 原始字节。
+
+        let binBytes = Data([0xDE, 0xAD, 0xBE, 0xEF])
+        MockRuleController.shared.applyForTesting(rules: [
+            MockRule(
+                id: "r-hand", method: "GET", path: "/api/hello",
+                response: MockResponse(statusCode: 200,
+                    headers: ["Content-Type": "application/json"],
+                    body: #"{"msg":"hand-written"}"#),
+                enabled: true, effective: true),
+            MockRule(
+                id: "r-bin", method: "GET", path: "/api/bin",
+                response: MockResponse(statusCode: 200,
+                    headers: ["Content-Type": "application/octet-stream"],
+                    body: "[binary 4 bytes]",
+                    bodyBase64: binBytes.base64EncodedString()),
+                enabled: true, effective: true),
+        ], version: 1)
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { _ in XCTFail("命中 Mock 不应转发"); return jsonResponse(200, json: [:]) }
+
+        func fetch(_ path: String) -> Data? {
+            let req = URLRequest(url: URL(string: "https://api.example.com\(path)")!)
+            let received = Box<Data?>(nil)
+            let exp = expectation(description: path)
+            businessSession().dataTask(with: req) { data, _, _ in
+                received.value = data
+                exp.fulfill()
+            }.resume()
+            wait(for: [exp], timeout: 3)
+            return received.value
+        }
+
+        XCTAssertEqual(fetch("/api/hello"), Data(#"{"msg":"hand-written"}"#.utf8),
+                       "手填规则应回 UTF-8 文本")
+        XCTAssertEqual(fetch("/api/bin"), binBytes,
+                       "二进制规则应回 bodyBase64 原始字节，不被手填分支影响")
+    }
+
     // MARK: - 19 位整数 ID 精度（回归）
 
     /// 增量拉取解码：body 字符串中的大整数 ID 必须逐位保留，不被
