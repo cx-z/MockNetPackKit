@@ -10,14 +10,14 @@ import os
 ///   （4.12 起钳制 2...300，仅作防误配保护；契约实际下发 capturing 3s /
 ///   idle 5s——3s 必须放行，否则"快速感知规则变更"被抬成 5s），
 ///   心跳失败按指数退避重试。
-/// - 心跳 404（device_not_registered）→ M7.2.3 起 SDK 不再自动注册：
+/// - 心跳 404（device_not_registered）→  起 SDK 不再自动注册：
 ///   设备必须先在 Web 手动注册。收到 404 后静默停循环（不弹窗、不重试），
 ///   仅写一行技术日志；业务方重启 App 后若 Web 已注册则自动恢复。
 /// - 注册 403（携带配对令牌时，4.13）→ 令牌无效/过期：停循环并上抛
 ///   `.tokenInvalid` 可展示状态（「二维码已过期，请刷新」），不再退避重试。
 /// - 60s 超时语义由服务端判定（契约 §2）：SDK 恢复心跳后自然收到
 ///   `session=null`，无需自实现超时计时。
-/// - 本类不实现 Debug/Release 门（M0 责任边界：由业务方构建层保证）。
+/// - 本类不实现 Debug/Release 门（ 责任边界：由业务方构建层保证）。
 final class ConnectionController: @unchecked Sendable {
 
     /// 进程内共享实例（业务方经 `MockNetPackKit` 门面访问）。
@@ -50,14 +50,14 @@ final class ConnectionController: @unchecked Sendable {
     private var didValue: String?
     private var logHandler: (@Sendable (String) -> Void)?
 
-    // M9.2 扫码连接：本次连接会话使用的配对令牌与设备显示名（一次性注册通道；
+    //  扫码连接：本次连接会话使用的配对令牌与设备显示名（一次性注册通道；
     // 连接会话内保留——网络抖动重注册时仍可复用，stop/start 时重置）。
     private var pairingTokenValue: String?
     private var deviceNameValue: String?
 
     private var serverConfig = ServerConfig(heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 60)
     private var registered = false
-    /// M7.2.3: 设备未在 Web 注册（register/heartbeat 404）→ 静默停循环，不再重试。
+    /// : 设备未在 Web 注册（register/heartbeat 404）→ 静默停循环，不再重试。
     private var unregistered = false
     private var currentBackoff: TimeInterval = 1
     private var inflight = false
@@ -75,8 +75,8 @@ final class ConnectionController: @unchecked Sendable {
     /// 启动连接层（幂等：已在运行则直接返回）。did 首次生成后持久化。
     /// - Parameters:
     ///   - server: 服务器 base URL。
-    ///   - pairingToken: 扫码配对令牌（M9.2，可选）：随注册请求携带，服务端据此自动注册/复用设备。
-    ///   - deviceName: 扫码自动注册时的设备显示名（M9.2，可选）。
+    ///   - pairingToken: 扫码配对令牌：随注册请求携带，服务端据此自动注册/复用设备。
+    ///   - deviceName: 扫码自动注册时的设备显示名。
     func start(server: URL,
                appID: String?,
                externalDID: String? = nil,
@@ -97,7 +97,7 @@ final class ConnectionController: @unchecked Sendable {
         appNameValue = appName
         sdkVersionValue = sdkVersion
         osVersionValue = osVersion
-        // M7.2.4: 业务方传入 did（如业务方 Keychain deviceID）则直接用；否则 SDK 自行生成。
+        // : 业务方传入 did（如业务方 Keychain deviceID）则直接用；否则 SDK 自行生成。
         didValue = externalDID ?? DIDStore.did(forApp: appID ?? "")
         self.logHandler = logHandler
         serverConfig = ServerConfig(heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 60)
@@ -112,7 +112,7 @@ final class ConnectionController: @unchecked Sendable {
         setConnectionState(.connecting)
         scheduleNext()
 
-        // M2.4：启动流量采集（注册全局 URLProtocol；会话未激活时不拦截）。
+        // ：启动流量采集（注册全局 URLProtocol；会话未激活时不拦截）。
         TrafficCaptureController.shared.start(
             serverURL: server,
             appID: appID ?? "",
@@ -169,7 +169,7 @@ final class ConnectionController: @unchecked Sendable {
         deviceNameValue = nil
         lock.unlock()
         log("MockNetPackKit stopped")
-        // M2.4：先停止采集（注销 URLProtocol、清空待上传批次），再广播 idle 状态。
+        // ：先停止采集（注销 URLProtocol、清空待上传批次），再广播 idle 状态。
         TrafficCaptureController.shared.stop()
         MockRuleController.shared.reset()
         setConnectionState(.offline)
@@ -188,7 +188,7 @@ final class ConnectionController: @unchecked Sendable {
         return didValue
     }
 
-    /// 当前连接会话的 appID（M9.2：扫码流程复用与启动一致的 appID/did 作用域）。
+    /// 当前连接会话的 appID（：扫码流程复用与启动一致的 appID/did 作用域）。
     var resolvedAppID: String? {
         lock.lock(); defer { lock.unlock() }
         return appIDValue
@@ -267,13 +267,13 @@ final class ConnectionController: @unchecked Sendable {
                 serverConfig = resp.serverConfig
             }
             setConnectionState(.connected)
-            // M2.4：先驱动流量采集启停，再广播会话状态——外部 onSessionStateChange
+            // ：先驱动流量采集启停，再广播会话状态——外部 onSessionStateChange
             // 回调可能立即发起业务请求，此时采集开关必须已就绪（否则首批请求漏采）。
             TrafficCaptureController.shared.updateSession(
                 capturing: resp.session != nil,
                 sessionID: resp.session?.id)
             setSessionState(resp.session != nil ? .capturing : .idle)
-            // M3.4：按服务端 rulesVersion 增量拉取本地 Mock 快照（fail-open）。
+            // ：按服务端 rulesVersion 增量拉取本地 Mock 快照（fail-open）。
             await MockRuleController.shared.syncIfNeeded(
                 client: client, app: appID, did: did,
                 serverVersion: resp.rulesVersion ?? 0)
@@ -336,12 +336,12 @@ final class ConnectionController: @unchecked Sendable {
             log("registered app=\(appID) did=\(did)")
             setConnectionState(.connected)
             finishCycle(gen: gen)
-            // M8.2：register 成功后立即心跳（去掉原 2s 硬延迟）。
+            // ：register 成功后立即心跳（去掉原 2s 硬延迟）。
             // 启动链路 register(RTT1)→heartbeat(RTT2)→rules sync(RTT3) 串行，
             // LAN 下 ~1s 内完成启动连接与规则同步。
             scheduleNext(now: true)
         } catch ConnectionClientError.httpStatus(404) {
-            // M7.2.3: 服务端拒绝注册（设备未在 Web 手动注册）→ 静默停循环。
+            // : 服务端拒绝注册（设备未在 Web 手动注册）→ 静默停循环。
             guard isCurrent(gen) else {
                 finishCycle(gen: gen)
                 return

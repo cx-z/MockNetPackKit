@@ -45,16 +45,16 @@ The SDK is a small set of **singletons with lock-protected state**, orchestrated
 | `MockRuleController` | `shared` | Holds the effective rule snapshot (pulled incrementally by version), `match(method:path:)`, fail-open handling |
 | `URLSessionConfigurationInjector` | enum | Swizzles `+defaultSessionConfiguration` / `+ephemeralSessionConfiguration` to inject the interceptor at index 0 |
 | `DIDStore` | enum | did generation (UUID) + per-app `UserDefaults` persistence |
-| `ServerAddressStore` | enum | M9.2 server-address persistence (`mocknetpack.server.v1.<appID>`, same pattern as `DIDStore`) — saved by scan, read by `start()` for direct connect |
-| `QRConnectParser` | enum | M9.2 parses `mocknetpack://connect?v=1&u=<base64url>&a=<appID>&t=<token>` (scheme/version/http(s)+host/appID match/token); `QRConnectPayload` |
-| `QRScannerViewController` | class (UIViewController, iOS-only) | M9.2 native AVCaptureSession QR scan, camera permission (denied/unavailable), `QRScanProviding` protocol seam for test injection — **v1.4：`finish()` dismiss 前置 + `dismissIfPresented()` 兜底（扫码流程结束由 connectByScan 调用，防面板静默不收起）**；宿主 Debug 包需 `NSCameraUsageDescription` + `NSLocalNetworkUsageDescription`（iOS 14+ 访问局域网需授权；均 Debug-only 注入，Release 不含，v1.2） |
+| `ServerAddressStore` | enum |  server-address persistence (`mocknetpack.server.v1.<appID>`, same pattern as `DIDStore`) — saved by scan, read by `start()` for direct connect |
+| `QRConnectParser` | enum |  parses `mocknetpack://connect?v=1&u=<base64url>&a=<appID>&t=<token>` (scheme/version/http(s)+host/appID match/token); `QRConnectPayload` |
+| `QRScannerViewController` | class (UIViewController, iOS-only) |  native AVCaptureSession QR scan, camera permission (denied/unavailable), `QRScanProviding` protocol seam for test injection — **v1.4：`finish()` dismiss 前置 + `dismissIfPresented()` 兜底（扫码流程结束由 connectByScan 调用，防面板静默不收起）**；宿主 Debug 包需 `NSCameraUsageDescription` + `NSLocalNetworkUsageDescription`（iOS 14+ 访问局域网需授权；均 Debug-only 注入，Release 不含，v1.2） |
 | `BinaryCodec` | Data extension | Standard gzip compression (zlib) used by the encrypt path |
 
 ## Concurrency model
 
 - All mutable state lives in singletons guarded by an `NSLock`; per-module serial `DispatchQueue`s sequence scheduling (connection loop, flush timer).
 - `@unchecked Sendable` singletons; callbacks (`onSessionStateChange`, `onConnectionStateChange`, `logHandler`) are dispatched on the **main queue**.
-- `URLProtocol` guarantees a single instance's `startLoading`/`stopLoading` don't race; one **shared forwarding `URLSession`** is reused (per-request sessions were the root cause of a 1s-per-request TLS re-handshake regression, M8).
+- `URLProtocol` guarantees a single instance's `startLoading`/`stopLoading` don't race; one **shared forwarding `URLSession`** is reused (per-request sessions were the root cause of a 1s-per-request TLS re-handshake regression).
 
 ## Data flows
 
@@ -68,7 +68,7 @@ MockNetPackKit.start(server:)
       → scheduleNext(now: true)            // serial queue
   Loop (one in-flight op at a time):
       register (if !registered) → POST /devices/register
-          404 → unregistered = true, stop loop (M7.2.3) — restart app to retry
+          404 → unregistered = true, stop loop  — restart app to retry
           ok  → registered = true; scheduleNext(now: true)
       heartbeat → POST /devices/{app}/{did}/heartbeat
           ok  → connected; serverConfig updated (interval 3s/5s dynamic)
@@ -78,10 +78,10 @@ MockNetPackKit.start(server:)
           404 → unregistered = true, stop loop (no retry)
           err → offline; exponential backoff 1s→30s; scheduleNext(delay: backoff)
 
-M12（v0.13.0）：服务端 TrafficEntry 新增 seq（每会话自增到达序号，增量游标），
+（v0.13.0）：服务端 TrafficEntry 新增 seq（每会话自增到达序号，增量游标），
 由服务端在 UploadTraffic 时按到达顺序盖章——SDK 上传不携带、不感知、不消费；
 Web/MCP/CLI 查询侧使用，SDK 契约（register/heartbeat/upload/mock-rules pull）不变。
-M12.3（v0.13.0）：命中流量新增 matchedRuleId 上报——MockRuleController.match
+（v0.13.0）：命中流量新增 matchedRuleId 上报——MockRuleController.match
 把命中规则 ID 写入 MockResponse.ruleId，serve 记入 TrafficEntry.matchedRuleId；
 仅 mocked=true 非空，Web 展示与回放语义不变。
 ```
@@ -102,14 +102,14 @@ heartbeat says session != nil (capturing)
   → record(): bodyParts() (1MB truncation; "[binary N bytes]" + base64 for binary)
               decodedBody() via codec slots (display only)
   → flush(): batch threshold 200 / 8MB / 2s → POST /api/v1/traffic
-             failure → drop batch, no retry (F7.6)
+             failure → drop batch, no retry 
 
 heartbeat says session == nil (idle) or stop()
   → updateSession(capturing: false) → pending cleared (session-end semantics)
   → stop() → unregister URLProtocol + uninstall swizzle
 ```
 
-### 3. Mock match & serve (three-tier body fallback, M7)
+### 3. Mock match & serve (three-tier body fallback)
 
 ```
 URLProtocol.startLoading
@@ -124,7 +124,7 @@ URLProtocol.startLoading
       deliver HTTPURLResponse to the URLProtocol client
 ```
 
-### 4. Binary codec pipeline (M6.1)
+### 4. Binary codec pipeline 
 
 ```
 registerBinaryCodec(for:"xcp", compression:.gzip, responseEncrypt:, responseDecrypt:,
@@ -140,7 +140,7 @@ registerBinaryCodec(for:"xcp", compression:.gzip, responseEncrypt:, responseDecr
             are treated as decode failure, not business payload.
 ```
 
-### 5. Scan-connect (M9.2, D1–D7)
+### 5. Scan-connect 
 
 ```
 Debug page → MockNetPackKit.connectByScan(from:completion:)
@@ -154,10 +154,10 @@ Debug page → MockNetPackKit.connectByScan(from:completion:)
       ConnectionController.start(server: newURL, …) // direct connect now (A2)
 Failure: saved address untouched (R1.6)
 
-start(did:)  (M9.2 no-arg launch)
+start(did:)  ( no-arg launch)
   → saved address? → start(server:, did:)   // direct connect, no scan needed (A2)
   → none         → startUnconfigured()      // resolves did only; .unconfigured, no network
-did = externalDID (e.g. 业务方 UIDevice.deviceID) ?? DIDStore — scan register reuses the SAME did (D7)
+did = externalDID (e.g. 业务方 UIDevice.deviceID) ?? DIDStore — scan register reuses the SAME did 
 ```
 
 ## Fail-open guarantees

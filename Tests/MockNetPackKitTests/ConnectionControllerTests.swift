@@ -166,7 +166,7 @@ final class ConnectionControllerTests: XCTestCase {
 
         controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
 
-        // 注册成功、心跳一次后 404 → M7.2.3：静默停循环，不再重新注册。
+        // 注册成功、心跳一次后 404 → ：静默停循环，不再重新注册。
         waitUntil(timeout: 3) { self.registerCalls >= 1 && self.heartbeatCalls >= 1 }
         waitUntil { self.controller.connectionState == .offline }
 
@@ -284,7 +284,7 @@ final class ConnectionControllerTests: XCTestCase {
 
         controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m2", osVersion: "17.5")
 
-        // M3 fix：注册后首次心跳为快速 2s（启动首屏尽快拉规则），不验证首跳间隔；
+        //  fix：注册后首次心跳为快速 2s（启动首屏尽快拉规则），不验证首跳间隔；
         // 验证从第二次起按服务端配置 5s 节奏心跳。间隔用单调时钟测量（见 waitUntil）。
         waitUntil(timeout: 4) { self.heartbeatCalls >= 1 }
         let t1 = ProcessInfo.processInfo.systemUptime
@@ -370,7 +370,7 @@ final class ConnectionControllerTests: XCTestCase {
         XCTAssertNotEqual(controller.connectionState, .tokenInvalid)
     }
 
-    // MARK: - M2.4 采集联动
+    // MARK: -  采集联动
 
     /// 心跳带会话 → 流量采集开启；会话结束 → 采集关闭。
     func testHeartbeatWithSession_DrivesTrafficCapture() {

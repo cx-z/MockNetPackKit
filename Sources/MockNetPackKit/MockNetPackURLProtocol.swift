@@ -1,6 +1,6 @@
 import Foundation
 
-/// URLProtocol 全局拦截器（M2.4，决策 D-M2-2：URLProtocol 注入，不改业务代码）。
+/// URLProtocol 全局拦截器。
 ///
 /// 工作机制：
 /// - 由 `TrafficCaptureController.start` 全局注册（URLProtocol.registerClass），
@@ -17,7 +17,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     /// SDK 自身请求的跳过标记 header（ConnectionClient 统一携带）。
     static let skipHeader = "X-MockNetPack-Skip"
 
-    /// 请求/响应体截断上限（契约 v0.2.0：M2 固定 1MB，不做配置项）。
+    /// 请求/响应体截断上限（契约 v0.2.0： 固定 1MB，不做配置项）。
     static let bodyLimit = 1_048_576
 
     /// 请求体读取超时（4.21）：`readBody` 在 URL 加载线程上轮询
@@ -46,7 +46,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     private var startTime = Date()
     private var forwardingTask: URLSessionDataTask?
     /// 全局共享的转发 session：每个请求新建 session 会导致 TLS 连接不复用、
-    /// 每次都重新握手（~1s），是 M8 真机"连 SDK 后所有请求慢 1s"的根因。
+    /// 每次都重新握手（~1s），是  真机"连 SDK 后所有请求慢 1s"的根因。
     /// URLSession 本身线程安全，completionHandler 模式可安全共享。
     nonisolated(unsafe) private static var sharedForwardingSession: URLSession?
     private static let sessionLock = NSLock()
@@ -66,7 +66,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override init(request: URLRequest, cachedResponse: CachedURLResponse?, client: URLProtocolClient?) {
-        // M8.2 修复：在 init 阶段就读 stream，此时 stream 还未被 URLSession 预读。
+        //  修复：在 init 阶段就读 stream，此时 stream 还未被 URLSession 预读。
         var rq = request
         let body = Self.readBody(of: request, rewriting: &rq)
         self.capturedBody = body
@@ -76,7 +76,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         startTime = Date()
 
-        // M3.4：先查本地 Mock 快照。命中则直接合成回包，不转发真实网络。
+        // ：先查本地 Mock 快照。命中则直接合成回包，不转发真实网络。
         let method = request.httpMethod ?? "GET"
         let path = request.url?.path ?? ""
         if let mock = MockRuleController.shared.match(method: method, path: path) {
@@ -121,7 +121,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         // 注意：不 invalidate 全局共享 session，否则会杀掉所有在飞的转发连接。
     }
 
-    // MARK: - Mock 回包（M3.4）
+    // MARK: - Mock 回包
 
     /// 命中本地 Mock 规则：合成 HTTP 响应直接回给原请求者，不转发真实网络，
     /// 同时记一条 mocked=true 的临时流量（会话结束随临时流量清空）。
@@ -131,7 +131,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         if headerFields["Content-Type"] == nil {
             headerFields["Content-Type"] = "application/json"
         }
-        // M8 修复：删除动态密钥轮换 header（x-xc-proto-res）。
+        //  修复：删除动态密钥轮换 header（x-xc-proto-res）。
         // mock 快照是历史捕获的，其 x-xc-proto-res 是当时的旧密钥；
         // 若回放给接入方，responseComplete 会把旧密钥设为当前密钥，
         // 导致后续所有真实请求用过期密钥加密 → 服务器无法解密 → 全部 96 字节错误。
@@ -142,7 +142,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         let response = HTTPURLResponse(
             url: url, statusCode: mock.statusCode,
             httpVersion: "HTTP/1.1", headerFields: headerFields)
-        // M7 回放三级 fallback（2026-09-21 调整顺序）：
+        //  回放三级 fallback（2026-09-21 调整顺序）：
         // ① bodyBase64 有原始字节 → 按原始字节回放（未编辑的二进制规则，"Mock 此请求"直接启用）
         // ② body 有编辑过的文本 + encoder 可用 → 编码回私有二进制协议字节（Web 编辑生效）
         // ③ 否则 → UTF-8 文本直传（纯文本 JSON 接口）
@@ -161,8 +161,8 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             data = Data((mock.body ?? "").utf8)
         }
 
-        // 记录一条 Mock 命中流量。M8.1：同时捕获真实请求体（M3.4 已知行为修复）。
-        // M8.2 修复：请求体在 init 阶段已抢读到 capturedBody（此后 stream 已耗尽），
+        // 记录一条 Mock 命中流量。：同时捕获真实请求体（ 已知行为修复）。
+        //  修复：请求体在 init 阶段已抢读到 capturedBody（此后 stream 已耗尽），
         // 此处必须复用 capturedBody，不能重读 request（会读到空体）。
         let reqBodyData = self.capturedBody
         let reqParts = Self.bodyParts(reqBodyData)
@@ -245,10 +245,10 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             entry.responseBody = nil
             entry.responseBodyBase64 = nil
         } else if let raw = data, !raw.isEmpty {
-            // M4：调 App 注入的解码器把二进制私有协议解成可读文本（仅展示）。
+            // ：调 App 注入的解码器把二进制私有协议解成可读文本（仅展示）。
             entry.responseBodyDecoded = Self.decodedBody(raw, contentType: http?.value(forHTTPHeaderField: "Content-Type"))
         }
-        // M8.1：请求体同样经解码器解出可读文本（仅展示；失败/无解码器则 nil）。
+        // ：请求体同样经解码器解出可读文本（仅展示；失败/无解码器则 nil）。
         if let bodyData, !bodyData.isEmpty {
             entry.requestBodyDecoded = Self.decodedBody(bodyData, contentType: request.value(forHTTPHeaderField: "Content-Type"), isRequest: true)
         }
@@ -265,7 +265,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     /// 读取请求体；若 body 在 stream 中则重建为 httpBody（保证转发不丢）。
-    /// M8-debug 修复：用 hasBytesAvailable 判断是否还有数据，而不是 read 返回值。
+    ///  修复：用 hasBytesAvailable 判断是否还有数据，而不是 read 返回值。
     /// 原因：InputStream.read 在数据异步到达时会返回 0（非 EOF，只是"数据未就绪"），
     /// 之前用 n<=0 break 会导致只读到部分 body，服务器解密失败返回错误 key。
     /// 4.21 修复：轮询以 `readBodyTimeout` 为总预算（确定性上限），流始终不
@@ -320,7 +320,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     /// 用 App 注入的解码器把二进制 body（如 xcp AES+gzip）解成可读 UTF-8 文本
-    /// （M4 响应体 / M8.1 请求体；仅展示）。失败或未注册解码器返回 nil。
+    /// （ 响应体 /  请求体；仅展示）。失败或未注册解码器返回 nil。
     /// 解码用与 base64 相同的截断样本（1MB 上限），入参可为未截断原始数据。
     /// - Parameter isRequest: true 走请求体专用解码槽位（业务请求体/响应体编码不对称时
     ///   由 registerBinaryCodec 的 requestDecrypt 单独提供）；false 走响应体解码槽位。

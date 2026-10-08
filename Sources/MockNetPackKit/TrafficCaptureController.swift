@@ -1,15 +1,15 @@
 import Foundation
 import os
 
-/// 流量采集控制器（M2.4）：攒批、上传、启停。
+/// 流量采集控制器：攒批、上传、启停。
 ///
 /// 职责：
 /// - 跟随抓包会话启停：`updateSession(capturing:sessionID:)` 由连接层心跳结果
 ///   驱动——capturing 时注册拦截生效并采集，idle 时停止并清空待上传批次
 ///   （会话结束本地未上传的临时记录一并丢弃，与服务端"临时记录随会话清空"一致）。
 /// - 攒批上传：按条数阈值（200）/字节阈值（8MB）/定时（2s）触发，
-///   单批 ≤500 条（契约）；上传失败直接丢弃批次、不重传（需求 F7.6）。
-/// - 全局注册/注销 `MockNetPackURLProtocol`（决策 D-M2-2）。
+///   单批 ≤500 条（契约）；上传失败直接丢弃批次、不重传（需求 ）。
+/// - 全局注册/注销 `MockNetPackURLProtocol`（决策 D-）。
 final class TrafficCaptureController: @unchecked Sendable {
 
     /// 进程内共享实例。
@@ -45,7 +45,7 @@ final class TrafficCaptureController: @unchecked Sendable {
     private var serverURLValue: URL?
     private var logHandler: (@Sendable (String) -> Void)?
 
-    /// 响应体解码槽位（M4 机制）：由 registerBinaryCodec（M6.1）安装 dispatch 闭包，
+    /// 响应体解码槽位（ 机制）：由 registerBinaryCodec安装 dispatch 闭包，
     /// 测试可直接注入；URLProtocol 在组装真实响应时读取。独立小锁保护（设置低频、读取高频）。
     private let decoderLock = NSLock()
     private var bodyDecoderValue: MockNetPackKit.BodyDecoder?
@@ -53,7 +53,7 @@ final class TrafficCaptureController: @unchecked Sendable {
         get { decoderLock.lock(); defer { decoderLock.unlock() }; return bodyDecoderValue }
         set { decoderLock.lock(); bodyDecoderValue = newValue; decoderLock.unlock() }
     }
-    /// 响应体编码槽位（M5 机制）：由 registerBinaryCodec（M6.1）安装 dispatch 闭包，
+    /// 响应体编码槽位（ 机制）：由 registerBinaryCodec安装 dispatch 闭包，
     /// URLProtocol 在回放编辑过的文本回包时调用，把文本重新编码回二进制协议字节。
     /// 与 bodyDecoder 共用同一把小锁。
     private var bodyEncoderValue: MockNetPackKit.BodyEncoder?
@@ -61,7 +61,7 @@ final class TrafficCaptureController: @unchecked Sendable {
         get { decoderLock.lock(); defer { decoderLock.unlock() }; return bodyEncoderValue }
         set { decoderLock.lock(); bodyEncoderValue = newValue; decoderLock.unlock() }
     }
-    /// 请求体专用解码槽位（M8.1）：业务请求体与响应体编码不对称时（如请求体仅 AES、
+    /// 请求体专用解码槽位：业务请求体与响应体编码不对称时（如请求体仅 AES、
     /// 响应体 gzip+AES），由 registerBinaryCodec 的 requestDecrypt 闭包安装；
     /// 未注册时为 nil，请求体不解码、回退 `[binary N bytes]` 占位。
     private var requestBodyDecoderValue: MockNetPackKit.BodyDecoder?
@@ -76,7 +76,7 @@ final class TrafficCaptureController: @unchecked Sendable {
         set { decoderLock.lock(); requestBodyEncoderValue = newValue; decoderLock.unlock() }
     }
 
-    // MARK: - 二进制协议编解码器（M6.1）
+    // MARK: - 二进制协议编解码器
 
     /// 一次 registerBinaryCodec 注册的 codec。加解密由业务方闭包提供；
     /// contentType 匹配 / gzip 压缩 / UTF-8 转换由 SDK 完成。
@@ -95,7 +95,7 @@ final class TrafficCaptureController: @unchecked Sendable {
     /// 与 bodyDecoder/bodyEncoder 共用 decoderLock。
     private var codecsValue: [BinaryCodecRegistration] = []
 
-    /// 注册 codec（M6.1）：追加到列表并安装 dispatch 闭包到 bodyDecoder/bodyEncoder 槽位。
+    /// 注册 codec：追加到列表并安装 dispatch 闭包到 bodyDecoder/bodyEncoder 槽位。
     /// - 展示链路（decrypt）：真实密文 → 业务解密 → SDK 转 UTF-8 文本；
     /// - 回放链路（encrypt）：编辑文本 → SDK 转 UTF-8 → gzip 压缩（.gzip）→ 业务加密。
     func registerBinaryCodec(
@@ -339,7 +339,7 @@ final class TrafficCaptureController: @unchecked Sendable {
                 let _: TrafficUploadResponse = try await client.post("traffic", body: req, as: TrafficUploadResponse.self)
                 self?.log("uploaded \(batch.count) traffic entries")
             } catch {
-                // 需求 F7.6：不做本地缓存、不重传；失败批次直接丢弃。
+                // 需求 ：不做本地缓存、不重传；失败批次直接丢弃。
                 self?.log("traffic upload failed: \(error.localizedDescription); batch dropped (no retry)")
             }
         }

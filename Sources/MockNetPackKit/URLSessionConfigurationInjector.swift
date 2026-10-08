@@ -1,7 +1,7 @@
 import Foundation
 import ObjectiveC
 
-/// URLSessionConfiguration 注入器（M2.4 核心机制）。
+/// URLSessionConfiguration 注入器（ 核心机制）。
 ///
 /// 背景：`URLProtocol.registerClass` 只影响 NSURLConnection 时代的 URL 加载系统；
 /// URLSession 的 configuration.protocolClasses 不会自动包含注册类（实测 macOS 亦然）。

@@ -4,34 +4,34 @@ import Foundation
 import UIKit
 #endif
 
-/// MockNetPackKit 公共入口（连接层，M1.5）。
+/// MockNetPackKit 公共入口（连接层）。
 ///
 /// 本 SDK 自身不做 Debug/Release 判断——是否集成、如何隔离构建完全由业务
 /// App 决定；接入方要求 Release 产物不含本 SDK，由接入方构建集成层保证
-/// （见 tasks/M0-SDK接入要点.md）。
+/// （见 tasks/-SDK接入要点.md）。
 public enum MockNetPackKit {
 
     /// SDK 版本号。
     public static let version = "1.0.2"
 
-    /// 响应体协议解码器（M4）：把私有二进制协议字节（如 xcp AES+gzip）解成可读
-    /// UTF-8 文本，仅用于 Web 展示。M6.1 起为内部机制，由 registerBinaryCodec
+    /// 响应体协议解码器：把私有二进制协议字节（如 xcp AES+gzip）解成可读
+    /// UTF-8 文本，仅用于 Web 展示。 起为内部机制，由 registerBinaryCodec
     /// 安装 dispatch 闭包；测试可直接注入。返回 nil 表示解不出（回退 `[binary N bytes]`）。
     /// - Parameters:
     ///   - data: 响应体原始字节（未截断的完整数据，调用方负责控制体积）。
     ///   - contentType: 响应 Content-Type 头，可用于判断是否需要解码。
     typealias BodyDecoder = @Sendable (_ data: Data, _ contentType: String?) -> String?
 
-    /// 响应体协议编码器（M5）：与 BodyDecoder 对称，把 Web 上编辑过的可读
+    /// 响应体协议编码器：与 BodyDecoder 对称，把 Web 上编辑过的可读
     /// UTF-8 文本重新编码回私有二进制协议字节（如 xcp 的 gzip+AES），用于 Mock
-    /// 回放。M6.1 起为内部机制，由 registerBinaryCodec 安装 dispatch 闭包。
+    /// 回放。 起为内部机制，由 registerBinaryCodec 安装 dispatch 闭包。
     /// 返回 nil 表示编不了（SDK 回退到 bodyBase64 原始字节或 UTF-8 文本）。
     /// - Parameters:
     ///   - text: Web 编辑后的完整回包文本（已解码格式，通常是 JSON）。
     ///   - contentType: 响应 Content-Type 头，可用于判断是否需要编码。
     typealias BodyEncoder = @Sendable (_ text: String, _ contentType: String?) -> Data?
 
-    /// 二进制协议压缩方式（M6.1）。当前仅标准 gzip 有实际使用场景；
+    /// 二进制协议压缩方式。当前仅标准 gzip 有实际使用场景；
     /// `.none` 表示不压缩（仅 UTF-8 转换 + 业务加解密）。
     public enum BinaryCompression: Sendable {
         /// 不压缩。
@@ -40,7 +40,7 @@ public enum MockNetPackKit {
         case gzip
     }
 
-    /// 注册一个二进制协议编解码器（M6.1）。一次注册同时接管两条链路：
+    /// 注册一个二进制协议编解码器。一次注册同时接管两条链路：
     /// - `decrypt`（解析抓到的包，展示链路）：真实响应的二进制密文 → 业务 AES 解密
     ///   → 明文（可转 UTF-8 的字节）；SDK 负责按 contentType 匹配并把结果转成可读文本。
     /// - `encrypt`（修改 mock 的数据，回放链路）：Web 编辑后的文本 → SDK 转 UTF-8 →
@@ -109,11 +109,11 @@ public enum MockNetPackKit {
         )
     }
 
-    /// 无参启动（M9.2 扫码连接）：读取持久化服务器地址直连；未配置 → `.unconfigured`
+    /// 无参启动（ 扫码连接）：读取持久化服务器地址直连；未配置 → `.unconfigured`
     /// （不发起网络，等待扫码）。appID 固定取 Bundle ID（ServerAddressStore 键与 did
     /// 作用域一致）。已注册设备重启免扫码（A2）。
-    /// - Parameter did: 业务方设备 ID（如业务方 Keychain deviceID，M7.2.4 一致性要求）。
-    ///   传 nil 则回退 SDK 内部 DIDStore。无论直连还是扫码注册，did 均以此为准（D7）。
+    /// - Parameter did: 业务方设备 ID（如业务方 Keychain deviceID， 一致性要求）。
+    ///   传 nil 则回退 SDK 内部 DIDStore。无论直连还是扫码注册，did 均以此为准。
     public static func start(did: String? = nil) {
         if let url = ServerAddressStore.load(forApp: bundleID) {
             start(server: url, did: did)
@@ -145,7 +145,7 @@ public enum MockNetPackKit {
     /// 会话状态（idle / capturing），由心跳响应 session 字段推导。
     public static var sessionState: SessionState { ConnectionController.shared.sessionState }
 
-    /// 会话状态变化回调（主线程派发；M2 起可据此启停采集）。
+    /// 会话状态变化回调（主线程派发； 起可据此启停采集）。
     public static var onSessionStateChange: (@Sendable (SessionState) -> Void)? {
         get { ConnectionController.shared.onSessionStateChange }
         set { ConnectionController.shared.onSessionStateChange = newValue }
@@ -157,9 +157,9 @@ public enum MockNetPackKit {
         set { ConnectionController.shared.onConnectionStateChange = newValue }
     }
 
-    // MARK: - M9.2 扫码连接（免写死服务器地址）
+    // MARK: -  扫码连接（免写死服务器地址）
 
-    /// 扫码连接错误分类（M9.2）。
+    /// 扫码连接错误分类。
     public enum ConnectByScanError: Error, Equatable, Sendable {
         /// 用户关闭扫码界面。
         case cancelled
@@ -187,9 +187,9 @@ public enum MockNetPackKit {
         ServerAddressStore.clear(forApp: bundleID)
     }
 
-    /// 扫码连接（M9.2，iOS）：**先请求相机权限（预授权，M11）** → 调起相机扫码 →
+    /// 扫码连接：**先请求相机权限（预授权）** → 调起相机扫码 →
     /// 解析校验 → 携带配对令牌注册（一次完成可达性 + 令牌校验）→ 成功则持久化地址并启动连接。
-    /// 已连接时（D6）直接切换到新服务器，旧服务器设备记录保留、心跳超时自然离线。
+    /// 已连接时直接切换到新服务器，旧服务器设备记录保留、心跳超时自然离线。
     /// 失败（R1.6）不覆盖已保存地址。
     /// - Parameters:
     ///   - presenter: 用于 present 扫码界面的视图控制器（Debug 页）。
@@ -198,7 +198,7 @@ public enum MockNetPackKit {
     public static func connectByScan(from presenter: UIViewController,
                                      completion: @escaping @Sendable (Result<Void, ConnectByScanError>) -> Void) {
         Task { @MainActor in
-            // M11-fix：进入相机页前先请求相机权限（授权弹窗与扫码页解耦）：
+            // ：进入相机页前先请求相机权限（授权弹窗与扫码页解耦）：
             // 首次授权后 AVFoundation 授权状态传播有延迟，若在扫码页内授权并立即
             // 建 session 易误判"相机不可用"。此处预授权 + 短暂等待传播就绪，再 present。
             let granted: Bool
@@ -216,14 +216,14 @@ public enum MockNetPackKit {
             // 扫码控制器为 @MainActor 隔离，须在 MainActor 上构造。
             let scanner = QRScannerViewController(presentingFrom: presenter)
             let result = await Self.connectByScan(scanner: scanner)
-            // M9.3-fix：扫码流程结束（成功/失败）兜底收起扫码面板，防 dismiss 竞态静默失败。
+            // ：扫码流程结束（成功/失败）兜底收起扫码面板，防 dismiss 竞态静默失败。
             scanner.dismissIfPresented()
             completion(result)
         }
     }
     #endif
 
-    /// 扫码连接核心（M9.2）：扫码 → 解析 → 令牌注册 → 持久化 + 启动。测试注入 mock scanner。
+    /// 扫码连接核心：扫码 → 解析 → 令牌注册 → 持久化 + 启动。测试注入 mock scanner。
     @MainActor
     static func connectByScan(scanner: QRScanProviding,
                               makeClient: (@Sendable (URL) -> ConnectionClient)? = nil) async -> Result<Void, ConnectByScanError> {
@@ -251,7 +251,7 @@ public enum MockNetPackKit {
             return .failure(.invalidPayload)
         }
 
-        // 3) 本地网络可达性探测（M11-2）：iOS 首次访问局域网地址会触发「本地网络」
+        // 3) 本地网络可达性探测：iOS 首次访问局域网地址会触发「本地网络」
         // 权限弹窗，未授权期间连接被系统拒绝——若直接注册，首次扫码必然失败
         // （unreachable）需二次扫码。先发轻量探测（收到任何 HTTP 响应即视为连通，
         // 传输层错误自动重试给授权留时间）；仍失败返回 unreachable。
@@ -260,7 +260,7 @@ public enum MockNetPackKit {
             return .failure(.unreachable)
         }
 
-        // 4) 令牌注册（可达性 + 令牌校验二合一）。did 复用（D7）：与启动注册同一 did。
+        // 4) 令牌注册（可达性 + 令牌校验二合一）。did 复用：与启动注册同一 did。
         let appID = ConnectionController.shared.resolvedAppID ?? bundleID
         let did = ConnectionController.shared.did ?? DIDStore.did(forApp: appID)
         let req = RegisterDeviceRequest(
@@ -296,7 +296,7 @@ public enum MockNetPackKit {
         return .success(())
     }
 
-    /// 本地网络可达性探测（M11-2）：对服务器地址发轻量 GET（必然 404 路径），
+    /// 本地网络可达性探测：对服务器地址发轻量 GET（必然 404 路径），
     /// 收到任何 HTTP 响应即视为网络连通且 iOS「本地网络」权限已就绪；传输层
     /// 错误（权限未授权/网络不可达）按固定间隔自动重试，给首次授权弹窗留出
     /// 操作时间。重试上限内任意一次成功即返回 true。

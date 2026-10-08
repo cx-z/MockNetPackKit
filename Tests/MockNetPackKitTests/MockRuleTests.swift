@@ -1,7 +1,7 @@
 import XCTest
 @testable import MockNetPackKit
 
-/// M3.4：本地 Mock 执行——规则匹配、回包合成、增量拉取、fail-open、会话门控。
+/// ：本地 Mock 执行——规则匹配、回包合成、增量拉取、fail-open、会话门控。
 final class MockRuleTests: XCTestCase {
 
     private let serverURL = URL(string: "http://mock.local/api/v1")!
@@ -239,7 +239,7 @@ final class MockRuleTests: XCTestCase {
         XCTAssertFalse(hit, "idle 时即使有规则也不应拦截/转发")
     }
 
-    // MARK: - M5 encoder: 文本→二进制回放
+    // MARK: -  encoder: 文本→二进制回放
 
     /// 有 encoder + 编辑过的文本 body → 回放 encoder 输出的二进制（Web 编辑生效）。
     func testEncoderEncodesEditedTextToBinary() throws {

@@ -1,6 +1,6 @@
 import Foundation
 
-/// 扫码错误（M9.2）。
+/// 扫码错误。
 enum QRScanError: Error, Equatable {
     /// 相机不可用（模拟器/无摄像头/无法配置采集会话）。
     case cameraUnavailable
@@ -8,7 +8,7 @@ enum QRScanError: Error, Equatable {
     case cameraDenied
 }
 
-/// 扫码结果提供协议（M9.2）：真实实现为 `QRScannerViewController`（AVCaptureSession），
+/// 扫码结果提供协议：真实实现为 `QRScannerViewController`（AVCaptureSession），
 /// 测试注入 mock 返回预置二维码文本。协议 @MainActor：扫码 UI 只在主线程触碰。
 @MainActor
 protocol QRScanProviding: Sendable {
@@ -22,7 +22,7 @@ protocol QRScanProviding: Sendable {
 @preconcurrency import AVFoundation
 import UIKit
 
-/// 原生相机扫码视图控制器（M9.2，D2/D3 拍板：原生实现、集成进 SDK、iOS 15 兼容）。
+/// 原生相机扫码视图控制器。
 ///
 /// 内部：AVCaptureSession + AVCaptureMetadataOutput(.qr)，识别到第一个二维码即回调；
 /// 相机权限：首次 requestAccess，拒绝 → `.cameraDenied`；无摄像头（模拟器）→ `.cameraUnavailable`。
@@ -50,12 +50,12 @@ final class QRScannerViewController: UIViewController, @unchecked Sendable, QRSc
 
     func scanQRCode() async throws -> String? {
         // 1) 相机权限（首次弹窗；拒绝 → cameraDenied）。已由 connectByScan 预授权
-        // （M11）时此处幂等返回 authorized；保留本检查兜底其他调用路径。
+        // 时此处幂等返回 authorized；保留本检查兜底其他调用路径。
         let granted = try await Self.requestCameraAccess()
         guard granted else { throw QRScanError.cameraDenied }
 
         // 2) 配置采集会话（模拟器无摄像头 → cameraUnavailable）。
-        // M11-fix：首次授权后 AVFoundation 授权状态传播有延迟——授权回调返回的
+        // ：首次授权后 AVFoundation 授权状态传播有延迟——授权回调返回的
         // 瞬间 AVCaptureDeviceInput(device:) 仍可能抛 "未授权"（-11819）。对 input
         // 创建做有限重试（0.3s 间隔 ×3），避免把"授权刚完成"误判为"相机不可用"。
         var input: AVCaptureDeviceInput?
@@ -123,7 +123,7 @@ final class QRScannerViewController: UIViewController, @unchecked Sendable, QRSc
     }
 
     /// 结束扫码并恢复等待方；幂等（防止 delegate 与取消按钮双触发）。
-    /// M9.3-fix：先收起扫码面板（dismiss 前置），再恢复等待方——面板收起不依赖
+    /// ：先收起扫码面板（dismiss 前置），再恢复等待方——面板收起不依赖
     /// 后续连接逻辑；再由调用方在流程结束时兜底 dismissIfPresented() 防静默失败。
     private func finish(_ value: String?) {
         guard !finished else { return }
@@ -134,7 +134,7 @@ final class QRScannerViewController: UIViewController, @unchecked Sendable, QRSc
         continuation = nil
     }
 
-    /// 兜底收起（M9.3-fix）：扫码流程结束（成功/失败）后由调用方调用；
+    /// 兜底收起：扫码流程结束（成功/失败）后由调用方调用；
     /// 面板仍在窗口上（扫码完成但 dismiss 因竞态未生效）时才 dismiss，幂等安全。
     func dismissIfPresented() {
         guard !finished, view.window != nil else { return }
@@ -157,7 +157,7 @@ final class QRScannerViewController: UIViewController, @unchecked Sendable, QRSc
     }
 
     /// 相机权限检查/请求（首次弹窗；拒绝 → false）。幂等：已授权直接返回 true。
-    /// internal 供 connectByScan（M11）在进入相机页前预授权——授权弹窗与扫码页解耦。
+    /// internal 供 connectByScan在进入相机页前预授权——授权弹窗与扫码页解耦。
     static func requestCameraAccess() async throws -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:

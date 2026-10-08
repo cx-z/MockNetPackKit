@@ -1,7 +1,7 @@
 import XCTest
 @testable import MockNetPackKit
 
-/// M9.2 扫码连接门面测试：mock 扫码结果 + MockURLProtocol 模拟注册/心跳。
+///  扫码连接门面测试：mock 扫码结果 + MockURLProtocol 模拟注册/心跳。
 @MainActor
 final class ConnectByScanTests: XCTestCase {
 

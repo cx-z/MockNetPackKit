@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-/// 本地 Mock 规则控制器（M3.4）：持有当前生效规则快照，供 URLProtocol 匹配回包。
+/// 本地 Mock 规则控制器：持有当前生效规则快照，供 URLProtocol 匹配回包。
 ///
 /// 语义（需求 6.5/6.6 + 决策 E1/fail-open A）：
 /// - 快照来自心跳后按 `rulesVersion` 增量拉取 `GET .../mock-rules?sinceVersion=`。
@@ -72,7 +72,7 @@ final class MockRuleController: @unchecked Sendable {
     // MARK: - 匹配
 
     /// 按 Method + URL 路径查找本地生效规则；无匹配返回 nil（走真实网络）。
-    /// M12.3 P1-1：命中时把规则 ID 写入 response.ruleId，随命中流量上报 matchedRuleId。
+    ///  P1-1：命中时把规则 ID 写入 response.ruleId，随命中流量上报 matchedRuleId。
     func match(method: String, path: String) -> MockResponse? {
         lock.lock()
         defer { lock.unlock() }

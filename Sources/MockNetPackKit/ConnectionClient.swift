@@ -123,7 +123,7 @@ struct ConnectionClient: Sendable {
         }
     }
 
-    /// 发起 JSON GET 并解码响应（M3：规则增量拉取）。
+    /// 发起 JSON GET 并解码响应（：规则增量拉取）。
     func get<Resp: Decodable>(_ path: String, as type: Resp.Type) async throws -> Resp {
         let base = baseURL.absoluteString.hasSuffix("/")
             ? baseURL.absoluteString
@@ -157,7 +157,7 @@ struct ConnectionClient: Sendable {
         }
     }
 
-    /// 轻量可达性探测（M11-2）：GET 一个必然 404 的路径，收到任何 HTTP 响应
+    /// 轻量可达性探测：GET 一个必然 404 的路径，收到任何 HTTP 响应
     /// （含 404）即视为连通——用于扫码连接前触发/验证 iOS「本地网络」权限
     /// （首次访问局域网地址的连接会因未授权被系统拒绝，传输层错误在此上抛）。
     func probe() async throws {

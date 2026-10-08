@@ -4,8 +4,8 @@ Pod::Spec.new do |s|
   s.summary          = 'MockNetPack iOS SDK. HTTP capture & remote mock, integrated by the host app.'
   s.description      = <<-DESC
 MockNetPackKit is the client SDK for the internal HTTP capture & Mock platform.
-M1.5: connection layer (did registration, heartbeat, session state); interceptor
-lands in M2, mock client in M3.
+It includes the connection layer (device registration, heartbeat, session state),
+a URLProtocol interceptor for capturing HTTP traffic, and a local mock client.
 Whether to integrate (and in which build configurations) is decided by the
 host app; the integrating app links this pod in Debug configuration only.
                        DESC
@@ -16,6 +16,6 @@ host app; the integrating app links this pod in Debug configuration only.
   s.ios.deployment_target = '13.0'
   s.swift_version    = '5.0'
   s.source_files     = 'Sources/MockNetPackKit/**/*.{swift}'
-  s.frameworks       = 'Foundation', 'AVFoundation'   # M9.2 扫码连接（AVCaptureSession）
-  s.libraries        = 'z'   # M6.1 registerBinaryCodec 内置 gzip（zlib deflate）
+  s.frameworks       = 'Foundation', 'AVFoundation'   #  扫码连接（AVCaptureSession）
+  s.libraries        = 'z'   #  registerBinaryCodec 内置 gzip（zlib deflate）
 end

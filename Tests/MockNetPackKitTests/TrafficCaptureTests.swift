@@ -1,7 +1,7 @@
 import XCTest
 @testable import MockNetPackKit
 
-/// M2.4：URLProtocol 拦截/转发 + TrafficCaptureController 攒批上传。
+/// ：URLProtocol 拦截/转发 + TrafficCaptureController 攒批上传。
 final class TrafficCaptureTests: XCTestCase {
 
     /// 测试用可变状态容器（@Sendable 闭包内安全捕获）。
@@ -371,7 +371,7 @@ final class TrafficCaptureTests: XCTestCase {
         XCTAssertEqual(MockNetPackURLProtocol.sanitizedBody(binary), "[binary 4 bytes]")
     }
 
-    // MARK: - 请求体解析（M8.1）
+    // MARK: - 请求体解析
 
     /// xcp 二进制请求体：decoder 解出可读文本 → 上传条目携带 requestBodyDecoded，
     /// requestBody 保持 "[binary N bytes]" 占位、base64 保留原始字节（不参与回放，仅展示）。
@@ -424,7 +424,7 @@ final class TrafficCaptureTests: XCTestCase {
         XCTAssertEqual(entry["requestBodyDecoded"] as? String, #"{"cmd":"login"}"#)
     }
 
-    /// Mock 命中路径（M8.1，M3.4 修复）：不转发真实网络，但请求体仍被捕获上传
+    /// Mock 命中路径：不转发真实网络，但请求体仍被捕获上传
     /// （requestBody 有值；xcp 请求体经 decoder 解出 requestBodyDecoded）。
     func testMockHitCapturesRequestBody() throws {
         let controller = TrafficCaptureController.shared
@@ -542,7 +542,7 @@ final class TrafficCaptureTests: XCTestCase {
         XCTAssertEqual(entry["requestBody"] as? String, "[binary 3 bytes]")
     }
 
-    /// 兼容性（M8.1）：只注册 decrypt（响应体）、未传 requestDecrypt 时，
+    /// 兼容性：只注册 decrypt（响应体）、未传 requestDecrypt 时，
     /// 请求体不解码（requestBodyDecoded 缺失），回退 `[binary]` 占位——兼容只注册
     /// 单解码器的旧 App。
     func testNoRequestDecryptFallsBackToPlaceholder() throws {

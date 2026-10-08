@@ -1,8 +1,8 @@
 import Foundation
 
-/// 扫码连接二维码载荷（M9，契约 v0.8.0）。
+/// 扫码连接二维码载荷。
 ///
-/// 二维码格式（D4）：`mocknetpack://connect?v=1&u=<base64url(server)>&a=<appID>&t=<token>`
+/// 二维码格式：`mocknetpack://connect?v=1&u=<base64url(server)>&a=<appID>&t=<token>`
 /// - `u`：Web 同源服务器地址（`${location.origin}/api/v1`），base64url 编码；
 /// - `a`：appID（必须与当前 App 匹配，防错扫）；
 /// - `t`：配对令牌（10 分钟有效，D5）。
@@ -18,7 +18,7 @@ struct QRConnectPayload: Equatable {
     let token: String
 }
 
-/// 二维码解析错误分类（M9.2）。
+/// 二维码解析错误分类。
 enum QRConnectParseError: Error, Equatable {
     /// scheme/host 不是 mocknetpack://connect。
     case notMockNetPack
@@ -34,7 +34,7 @@ enum QRConnectParseError: Error, Equatable {
     case missingToken
 }
 
-/// 扫码二维码解析器（M9.2）。
+/// 扫码二维码解析器。
 enum QRConnectParser {
 
     /// 解析并校验二维码内容。

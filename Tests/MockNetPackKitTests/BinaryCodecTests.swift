@@ -2,7 +2,7 @@ import XCTest
 @testable import MockNetPackKit
 import zlib
 
-/// M6.2：registerBinaryCodec 编解码器路径——
+/// ：registerBinaryCodec 编解码器路径——
 /// gzip 对称 / UTF-8 往返 / contentType 匹配（大小写不敏感、注册顺序）/
 /// .none 不压缩 / 失败回退 / 端到端回放。
 final class BinaryCodecTests: XCTestCase {
@@ -213,7 +213,7 @@ final class BinaryCodecTests: XCTestCase {
     }
 
     /// 未编辑二进制规则（body 为占位文本 + bodyBase64 原始字节）：回放必须输出
-    /// 原始字节，encrypt 闭包不应被调用（M7 顺序调整，bodyBase64 优先于 encoder）。
+    /// 原始字节，encrypt 闭包不应被调用（ 顺序调整，bodyBase64 优先于 encoder）。
     func testEndToEndReplayServesRawBytesForUneditedBinaryRule() throws {
         let controller = TrafficCaptureController.shared
         controller.start(serverURL: serverURL, appID: appID, did: did)

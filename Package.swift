@@ -1,7 +1,7 @@
 // swift-tools-version: 6.0
 //
 // MockNetPackKit —— 仅 Debug 构建的 HTTP 抓包与 Mock SDK。
-// M1.5 起包含连接层（注册/心跳/会话状态）；拦截器属 M2、Mock 客户端属 M3。
+//  起包含连接层（注册/心跳/会话状态）；拦截器属 、Mock 客户端属 。
 // macOS 平台声明仅用于在 macOS 上跑单元测试/冒烟（部署目标为 iOS 13）。
 import PackageDescription
 
