@@ -29,10 +29,29 @@ final class TrafficCaptureController: @unchecked Sendable {
     /// 单批字节阈值（避免超服务端 10MB 请求体上限）。
     let maxBatchBytes = 8 * 1024 * 1024
 
+    // MARK: - 长连接阈值（能力线 L1；独立额度，不占用 HTTP 流量额度）
+
+    /// 长连接独立额度（默认 1000 条，可注入便于测试）；超限丢最旧（rolling window）。
+    var maxLongConnEntries = 1000
+    /// 长连接 payload 完整保留上限（10KB，决策 #2）；超限仅存预览。
+    let maxLongConnPayloadBytes = 10 * 1024
+    /// 长连接 payload 预览上限（1KB，残留小项默认值）。
+    let maxLongConnPreviewBytes = 1024
+    /// 长连接单批条数阈值（≤500 契约上限，与 HTTP 同留余量 200）。
+    let maxLongConnBatchCount = 200
+    /// 长连接单批字节阈值（避免超服务端 10MB 请求体上限）。
+    let maxLongConnBatchBytes = 8 * 1024 * 1024
+    /// snapshot 30s 兜底（决策 #3）：距上次 snapshot 上报超过该时长且存在缓存
+    /// 快照时，随下一批次补发一条（状态变化立即上报由业务侧注入保证）。
+    /// var 可注入便于单测（默认 30s）。
+    var longConnSnapshotFallbackInterval: TimeInterval = 30
+
     // MARK: - 状态（锁保护）
 
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "com.mocknetpack.capture", qos: .utility)
+    /// L4：长连接 raw packet 解码专用串行队列（保证多包顺序与收包一致，不阻塞 socket 接收线程）。
+    private let decodeQueue = DispatchQueue(label: "com.mocknetpack.longconn.decode", qos: .utility)
 
     private var running = false
     private var capturingValue = false
@@ -44,6 +63,18 @@ final class TrafficCaptureController: @unchecked Sendable {
     private var didValue: String?
     private var serverURLValue: URL?
     private var logHandler: (@Sendable (String) -> Void)?
+
+    // MARK: - 长连接状态（能力线 L1；与 HTTP 流量缓冲互不干扰）
+
+    /// 长连接待上传缓冲（独立于 traffic pending；独立额度、独立上报端点）。
+    private var longConnPending: [LongConnectionRecordInput] = []
+    private var longConnPendingBytes = 0
+    /// 长连接采集开关（默认开；关闭后仅丢弃、不影响业务侧打点）。
+    private var longConnEnabledValue = true
+    /// 最近一次业务注入的 snapshot 记录（30s 兜底补发源）。
+    private var longConnLastSnapshot: LongConnectionRecordInput?
+    /// 最近一次 snapshot 上报时间（兜底判定；nil = 从未上报）。
+    private var longConnLastSnapshotAt: Date?
 
     /// 响应体解码槽位（ 机制）：由 registerBinaryCodec安装 dispatch 闭包，
     /// 测试可直接注入；URLProtocol 在组装真实响应时读取。独立小锁保护（设置低频、读取高频）。
@@ -227,6 +258,10 @@ final class TrafficCaptureController: @unchecked Sendable {
         self.logHandler = logHandler
         pending = []
         pendingBytes = 0
+        longConnPending = []
+        longConnPendingBytes = 0
+        longConnLastSnapshot = nil
+        longConnLastSnapshotAt = nil
         lock.unlock()
 
         // 注入（幂等）：若启动早期已由 arm() 预注入则跳过，避免重复注册拦截器类。
@@ -244,6 +279,10 @@ final class TrafficCaptureController: @unchecked Sendable {
         sessionIDValue = nil
         pending = []
         pendingBytes = 0
+        longConnPending = []
+        longConnPendingBytes = 0
+        longConnLastSnapshot = nil
+        longConnLastSnapshotAt = nil
         lock.unlock()
 
         // 还原注入、注销全局类；已创建会话的拦截由 canInit 静态开关兜底（stop 后 false）。
@@ -273,6 +312,10 @@ final class TrafficCaptureController: @unchecked Sendable {
         if changed {
             pending = []
             pendingBytes = 0
+            longConnPending = []
+            longConnPendingBytes = 0
+            longConnLastSnapshot = nil
+            longConnLastSnapshotAt = nil
         }
         lock.unlock()
 
@@ -306,9 +349,103 @@ final class TrafficCaptureController: @unchecked Sendable {
         }
     }
 
+    // MARK: - 长连接采集（能力线 L1；L2.1 实现）
+
+    /// 长连接采集开关（默认开；关闭后仅丢弃、不影响业务侧打点）。
+    var longConnectionCaptureEnabled: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return longConnEnabledValue }
+        set { lock.lock(); longConnEnabledValue = newValue; lock.unlock() }
+    }
+
+    /// 注入一条长连接记录（业务侧桥接层调用；线程安全）。
+    /// 语义（决策 #2/#3/#4）：独立缓冲与独立额度（默认 1000 条，超限丢最旧，
+    /// 不占用 HTTP 流量额度）；payload 完整保留 ≤10KB、超限仅存预览 ≤1KB；
+    /// snapshot 事件立即入队并缓存为 30s 兜底补发源；心跳等事件不逐条合并，
+    /// 随 snapshot 周期性可见。仅 capturing 且开关开启时入队。
+    func recordLongConnection(_ record: LongConnectionRecordInput) {
+        // L4：该通道注册了编解码器、且本次只有 raw（无 payloadText）→ 后台串行解码后入队。
+        // 串行队列保证多包顺序与原 socket 收包顺序一致；解不出则保留 base64 降级。
+        if record.eventType == .packet,
+           record.payloadText == nil,
+           let b64 = record.payloadBase64,
+           let raw = Data(base64Encoded: b64) {
+            if let coder = LongConnectionCollector.shared.coder(for: record.channelId) {
+                decodeQueue.async {
+                    var r = record
+                    let context: [String: String] = [
+                        "bizType": r.bizType ?? "",
+                        "msgId": r.msgId ?? "",
+                    ].compactMapValues { $0.isEmpty ? nil : $0 }
+                    if let text = coder.decode(channelId: r.channelId, raw: raw, context: context),
+                       !text.isEmpty {
+                        r.payloadText = text
+                        r.payloadBase64 = nil   // 三选一：有可读文本则不留 base64，避免重复存储
+                    }
+                    self.enqueueLongConn(r)
+                }
+                return
+            }
+        }
+        enqueueLongConn(record)
+    }
+
+    /// 入队一条长连接记录（开关判断/截断/额度/上报；解码分支与直连分支共用）。
+    private func enqueueLongConn(_ record: LongConnectionRecordInput) {
+        lock.lock()
+        guard running, capturingValue, longConnEnabledValue else { lock.unlock(); return }
+        var r = record
+        truncateLongConnPayload(&r)
+        if r.eventType == .snapshot, r.snapshot != nil {
+            longConnLastSnapshot = r
+            longConnLastSnapshotAt = Date()
+        }
+        let bytes = estimateLongConnBytes(r)
+        longConnPending.append(r)
+        longConnPendingBytes += bytes
+        // 独立额度：超限丢最旧（rolling window）。
+        while longConnPending.count > maxLongConnEntries {
+            let dropped = longConnPending.removeFirst()
+            longConnPendingBytes -= estimateLongConnBytes(dropped)
+        }
+        let count = longConnPending.count
+        let tooMany = count >= maxLongConnBatchCount
+        let tooBig = longConnPendingBytes >= maxLongConnBatchBytes
+        lock.unlock()
+
+        if tooMany || tooBig {
+            flush()
+        }
+    }
+
+    /// payload 截断（决策 #2）：完整保留 ≤10KB；超限仅存预览（≤1KB），
+    /// 原 payload 字段清空。text 优先（三选一），base64 按长度估算字节。
+    private func truncateLongConnPayload(_ r: inout LongConnectionRecordInput) {
+        if let text = r.payloadText, text.utf8.count > maxLongConnPayloadBytes {
+            r.payloadPreview = String(decoding: text.utf8.prefix(maxLongConnPreviewBytes), as: UTF8.self)
+            r.payloadText = nil
+        } else if let b64 = r.payloadBase64,
+                  b64.utf8.count * 3 / 4 > maxLongConnPayloadBytes {
+            // 预览截断为前 maxLongConnPreviewBytes 原始字节对应的 base64 长度。
+            r.payloadPreview = String(String(b64).prefix(maxLongConnPreviewBytes * 4 / 3))
+            r.payloadBase64 = nil
+        }
+    }
+
+    /// 长连接记录字节估算（入队计数用；与 HTTP 的估算口径独立）。
+    private func estimateLongConnBytes(_ r: LongConnectionRecordInput) -> Int {
+        var n = 256
+        n += r.payloadText?.utf8.count ?? 0
+        n += (r.payloadBase64?.utf8.count ?? 0) * 3 / 4
+        n += r.payloadPreview?.utf8.count ?? 0
+        return n
+    }
+
     /// 立即上传待上传批次（定时/阈值/会话激活时调用；无数据或无会话则 no-op）。
+    /// HTTP 流量与长连接日志分通道取批、分别上传（互不干扰；长连接走
+    /// POST /sessions/{id}/longconn）。
     func flush() {
         let batch: [TrafficEntry]
+        let longBatches: [String: [LongConnectionRecordInput]]
         let sessionID: String
         let serverURL: URL
         let appID: String
@@ -318,29 +455,67 @@ final class TrafficCaptureController: @unchecked Sendable {
               let sid = sessionIDValue,
               let url = serverURLValue,
               let app = appIDValue,
-              let d = didValue,
-              !pending.isEmpty else {
+              let d = didValue else {
             lock.unlock()
             return
         }
         batch = pending
+        pending = []
+        pendingBytes = 0
+        // 长连接：按 channelId 分组取批；snapshot 30s 兜底随批次补发。
+        var groups: [String: [LongConnectionRecordInput]] = [:]
+        for entry in longConnPending {
+            groups[entry.channelId, default: []].append(entry)
+        }
+        if let last = longConnLastSnapshot {
+            let now = Date()
+            let needsFallback: Bool
+            if let at = longConnLastSnapshotAt {
+                needsFallback = now.timeIntervalSince(at) >= longConnSnapshotFallbackInterval
+            } else {
+                needsFallback = true
+            }
+            if needsFallback {
+                groups[last.channelId, default: []].append(last)
+                longConnLastSnapshotAt = now
+            }
+        }
+        longBatches = groups
+        longConnPending = []
+        longConnPendingBytes = 0
         sessionID = sid
         serverURL = url
         appID = app
         did = d
-        pending = []
-        pendingBytes = 0
+        guard !batch.isEmpty || !longBatches.isEmpty else {
+            lock.unlock()
+            return
+        }
         lock.unlock()
 
         let client = makeClient(serverURL: serverURL)
-        let req = TrafficUploadRequest(app: appID, did: did, sessionId: sessionID, entries: batch)
-        Task { [weak self] in
-            do {
-                let _: TrafficUploadResponse = try await client.post("traffic", body: req, as: TrafficUploadResponse.self)
-                self?.log("uploaded \(batch.count) traffic entries")
-            } catch {
-                // 需求 ：不做本地缓存、不重传；失败批次直接丢弃。
-                self?.log("traffic upload failed: \(error.localizedDescription); batch dropped (no retry)")
+        if !batch.isEmpty {
+            let req = TrafficUploadRequest(app: appID, did: did, sessionId: sessionID, entries: batch)
+            Task { [weak self] in
+                do {
+                    let _: TrafficUploadResponse = try await client.post("traffic", body: req, as: TrafficUploadResponse.self)
+                    self?.log("uploaded \(batch.count) traffic entries")
+                } catch {
+                    // 需求 ：不做本地缓存、不重传；失败批次直接丢弃。
+                    self?.log("traffic upload failed: \(error.localizedDescription); batch dropped (no retry)")
+                }
+            }
+        }
+        for (channelID, records) in longBatches {
+            let req = LongConnUploadRequest(channelId: channelID, records: records)
+            Task { [weak self] in
+                do {
+                    let _: LongConnUploadResponse = try await client.post("sessions/\(sessionID)/longconn", body: req, as: LongConnUploadResponse.self)
+                    self?.log("uploaded \(records.count) longconn records (channel \(channelID))")
+                } catch {
+                    // 与 HTTP 同语义：不做本地缓存、不重传；失败批次直接丢弃。
+                    self?.log("longconn upload failed: \(error.localizedDescription); batch dropped (no retry)")
+                }
             }
         }
     }

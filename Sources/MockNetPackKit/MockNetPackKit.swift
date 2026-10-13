@@ -82,6 +82,39 @@ public enum MockNetPackKit {
         )
     }
 
+    // MARK: - 长连接日志（能力线 L1；L1.3 草案：类型与 API 签名，采集实现 L2.1）
+
+    /// 注册一条长连接通道（可多次调用，支持多框架共存）。
+    /// channelId 全局唯一，如 "xcpush_tcp"、"srwebsocket"。
+    /// - Parameters:
+    ///   - channelId: 通道标识（与注入记录 channelId 一致）。
+    ///   - metadata: 通道元信息（可选，如框架名/版本）。
+    public static func registerLongConnectionChannel(_ channelId: String,
+                                                     metadata: [String: String]? = nil) {
+        LongConnectionCollector.shared.registerChannel(channelId, metadata: metadata)
+    }
+
+    /// 注入一条长连接记录（业务侧桥接层调用；线程安全，内部缓冲）。
+    /// 必填 ≤4：channelId / eventType / ts / payload 三选一（packet/ack 事件必填其一，
+    /// 生命周期事件可省略）；其余字段全可选带默认。首期仅 in 方向 + 生命周期事件。
+    public static func recordLongConnection(_ record: LongConnectionRecordInput) {
+        LongConnectionCollector.shared.record(record)
+    }
+
+    /// 注册通道编解码器（L4：业务层注入私有协议解码能力）。
+    /// 注册后 SDK 收到该通道 raw packet 自动解码填 payloadText，业务回调里
+    /// 无需再手动回填解码文本（消除 ChatMessageService 类插桩点）。
+    public static func registerLongConnectionCoder(_ channelId: String,
+                                                    coder: any MockNetPackChannelCoder) {
+        LongConnectionCollector.shared.registerCoder(channelId, coder: coder)
+    }
+
+    /// 长连接采集开关（默认开）；关闭后仅丢弃、不影响业务侧打点。
+    public static var longConnectionCaptureEnabled: Bool {
+        get { LongConnectionCollector.shared.captureEnabled }
+        set { LongConnectionCollector.shared.captureEnabled = newValue }
+    }
+
     /// 启动连接层：生成/读取 did → 注册设备 → 周期心跳 → 会话状态推导。
     /// - Parameters:
     ///   - server: 服务器 base URL（形如 `http://host:4290/api/v1`）。
