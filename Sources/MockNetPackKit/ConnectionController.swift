@@ -118,6 +118,10 @@ final class ConnectionController: @unchecked Sendable {
             appID: appID ?? "",
             did: self.did ?? "",
             logHandler: self.logHandler)
+
+        // L5.1：零侵入长连接适配器（XCPushSocket delegate 代理）。幂等安装；
+        // 类未加载（框架未接入）时 no-op，不影响其他能力。
+        XCPushSocketAdapter.installIfNeeded()
     }
 
     /// 无服务器启动：仅解析 did 并置 `.unconfigured`，不发起网络、不启动采集；
@@ -155,6 +159,10 @@ final class ConnectionController: @unchecked Sendable {
         // 连接前创建的 URLSession（FDNetworkCore 等单例 session）携带拦截器；
         // 未连接时 isCapturing=false 不拦业务，扫码激活后即全量抓取。
         TrafficCaptureController.shared.arm()
+
+        // L5.1：零侵入长连接适配器（XCPushSocket delegate 代理）。幂等安装；
+        // 无服务器启动同样安装——保证扫码连接建立前创建的 XCPushSocket 即被代理。
+        XCPushSocketAdapter.installIfNeeded()
         setConnectionState(.unconfigured)
     }
 

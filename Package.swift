@@ -16,8 +16,15 @@ let package = Package(
         .library(name: "MockNetPackKit", targets: ["MockNetPackKit"]),
     ],
     targets: [
+        // L5.1：XCPushDelegateProxy 为 ObjC 承载（消息兜底转发 API 仅 ObjC 可用）。
+        // SwiftPM 不支持同一 target 混合语言，故独立为 C target，Swift target 依赖它。
+        .target(
+            name: "MockNetPackKitObjC",
+            publicHeadersPath: "include"
+        ),
         .target(
             name: "MockNetPackKit",
+            dependencies: ["MockNetPackKitObjC"],
             resources: []
         ),
         .executableTarget(
@@ -26,7 +33,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MockNetPackKitTests",
-            dependencies: ["MockNetPackKit"]
+            dependencies: ["MockNetPackKit", "MockNetPackKitObjC"]
         ),
     ]
 )

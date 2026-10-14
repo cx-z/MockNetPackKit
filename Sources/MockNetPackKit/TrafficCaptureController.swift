@@ -76,6 +76,18 @@ final class TrafficCaptureController: @unchecked Sendable {
     /// 最近一次 snapshot 上报时间（兜底判定；nil = 从未上报）。
     private var longConnLastSnapshotAt: Date?
 
+    // MARK: - 长连接双路径去重（L5.5）
+
+    /// 注入/代理双路径去重窗口表（key = "\(channelId)|\(msgId)" → 最近入队时间）。
+    /// 注入模式（L4 业务桥接）与代理模式（L5 自动采集）并存时，同一通道同一包会在
+    /// 毫秒级内各上报一次：窗口内重复直接丢弃；窗口外重复（服务端真实重发）保持
+    /// 代理层 duplicate 标记语义不受影响（由 XCPushLongConnRecorder.duplicateIDs 判定）。
+    /// 不绑定会话生命周期——socket 重连时代理层会重置其 duplicateIDs，本窗口表仅按
+    /// 时间过期清理，避免无限增长。
+    private var longConnDedupWindow: [String: Date] = [:]
+    /// 双路径去重窗口时长（默认 2s，可注入便于测试）。
+    var longConnDedupWindowInterval: TimeInterval = 2
+
     /// 响应体解码槽位（ 机制）：由 registerBinaryCodec安装 dispatch 闭包，
     /// 测试可直接注入；URLProtocol 在组装真实响应时读取。独立小锁保护（设置低频、读取高频）。
     private let decoderLock = NSLock()
@@ -370,6 +382,8 @@ final class TrafficCaptureController: @unchecked Sendable {
            let b64 = record.payloadBase64,
            let raw = Data(base64Encoded: b64) {
             if let coder = LongConnectionCollector.shared.coder(for: record.channelId) {
+                SDKLog.info("decode pipeline: hit coder channel=\(record.channelId) msgId=\(record.msgId ?? "-")",
+                               category: "longconn")
                 decodeQueue.async {
                     var r = record
                     let context: [String: String] = [
@@ -385,6 +399,8 @@ final class TrafficCaptureController: @unchecked Sendable {
                 }
                 return
             }
+            SDKLog.info("decode pipeline: packet+base64 but no coder for channel=\(record.channelId), keep base64",
+                           category: "longconn")
         }
         enqueueLongConn(record)
     }
@@ -394,6 +410,21 @@ final class TrafficCaptureController: @unchecked Sendable {
         lock.lock()
         guard running, capturingValue, longConnEnabledValue else { lock.unlock(); return }
         var r = record
+        // L5.5：双路径去重（注入+代理并存时同一包不重复上报）。仅 packet 事件
+        // （msgId 非空）参与；顺带清理窗口过期条目（表不绑定会话生命周期）。
+        if r.eventType == .packet, let msgId = r.msgId {
+            let key = r.channelId + "|" + msgId
+            let now = Date()
+            let expired = longConnDedupWindow.filter { now.timeIntervalSince($0.value) > longConnDedupWindowInterval }
+            for k in expired.keys {
+                longConnDedupWindow.removeValue(forKey: k)
+            }
+            if let last = longConnDedupWindow[key], now.timeIntervalSince(last) <= longConnDedupWindowInterval {
+                lock.unlock()
+                return // 双路径重复：丢弃第二条
+            }
+            longConnDedupWindow[key] = now
+        }
         truncateLongConnPayload(&r)
         if r.eventType == .snapshot, r.snapshot != nil {
             longConnLastSnapshot = r

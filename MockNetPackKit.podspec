@@ -15,7 +15,8 @@ host app; the integrating app links this pod in Debug configuration only.
   s.source           = { :git => 'https://github.com/cx-z/MockNetPackKit.git', :tag => '1.0.3' }
   s.ios.deployment_target = '13.0'
   s.swift_version    = '5.0'
-  s.source_files     = 'Sources/MockNetPackKit/**/*.{swift}'
+  s.source_files     = 'Sources/MockNetPackKit/**/*.{swift}', 'Sources/MockNetPackKitObjC/**/*.{h,m}'
+  s.public_header_files = 'Sources/MockNetPackKitObjC/include/*.h'
   s.frameworks       = 'Foundation', 'AVFoundation'   #  扫码连接（AVCaptureSession）
-  s.libraries        = 'z'   #  registerBinaryCodec 内置 gzip（zlib deflate）
+  s.libraries        = 'z'   #  registerBinaryCodec 内置 gzip（zlib deflate）；L5.2 解压
 end
