@@ -47,14 +47,14 @@ public enum MockNetPackKit {
     ///   按 compression 压缩 → 业务 AES 加密 → 密文字节用于 Mock 回包。
     ///
     /// 压缩语义（已定）：gzip 压缩由 SDK 完成（产出标准 1f 8b）；gzip 解压由业务方
-    /// 在 `decrypt` 闭包内完成（如业务方的 `decodeAes(data, ungzip: true)`）。
+    /// 在 `decrypt` 闭包内完成（示例：业务方自己的解密函数内联解压）。
     ///
     /// 匹配：按注册顺序，contentType（大小写不敏感）包含 `contentTypeKey` 即命中，
     /// 首个命中生效；未命中返回 nil，SDK 走既有 fallback（bodyBase64 → UTF-8）。
     /// 可注册多个 codec（不同 contentTypeKey）。
     ///
     /// - Parameters:
-    ///   - contentTypeKey: contentType 匹配键，例如 "xcp"。
+    ///   - contentTypeKey: contentType 匹配键，例如 "application/x-custom"。
     ///   - compression: 压缩方式（SDK 在 responseEncrypt 前执行）。
     ///   - responseEncrypt: 响应体业务加密闭包，入参为 SDK 压缩后的字节，返回密文（nil 表示失败）。
     ///   - responseDecrypt: 响应体业务解密闭包，入参为原始密文，返回明文（nil 表示失败）。
@@ -85,7 +85,7 @@ public enum MockNetPackKit {
     // MARK: - 长连接日志（能力线 L1；L1.3 草案：类型与 API 签名，采集实现 L2.1）
 
     /// 注册一条长连接通道（可多次调用，支持多框架共存）。
-    /// channelId 全局唯一，如 "xcpush_tcp"、"srwebsocket"。
+    /// channelId 全局唯一，如 "srwebsocket"、"mqtt"。
     /// - Parameters:
     ///   - channelId: 通道标识（与注入记录 channelId 一致）。
     ///   - metadata: 通道元信息（可选，如框架名/版本）。

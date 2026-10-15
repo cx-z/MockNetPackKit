@@ -3,10 +3,10 @@ import zlib
 
 /// 二进制协议 gzip 压缩。
 ///
-/// 与业务方 FDExtension `gzipCompress()` 输出格式一致：标准 gzip（1f 8b 头 + deflate +
+/// 与业务方自带的 gzip 工具输出格式一致：标准 gzip（1f 8b 头 + deflate +
 /// CRC32 + ISIZE）。由 SDK 内置 zlib 产出（deflateInit2 windowBits = MAX_WBITS + 16）。
-/// 注意：解压不在 SDK 内——已定由业务方 decrypt 闭包完成（如业务方的
-/// `decodeAes(data, ungzip: true)`）。
+/// 注意：解压不在 SDK 内——已定由业务方 decrypt 闭包完成（解压与解密合并到
+/// 业务方自己的解包函数中）。
 extension Data {
     /// 把本 Data 按标准 gzip 格式压缩；空数据或压缩失败返回 nil。
     func gzipCompressed() -> Data? {

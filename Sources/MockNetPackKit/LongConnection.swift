@@ -128,10 +128,10 @@ public struct LongConnectionSnapshot: Codable, Sendable {
 /// heartbeat/snapshot）可省略；其余字段全可选带默认。
 ///
 /// 不含 id/sessionId/seq——由服务端生成（见契约 LongConnectionRecord）。
-/// 构造示例（业务包）：`LongConnectionRecordInput(channelId: "xcpush_tcp",
+/// 构造示例（业务包）：`LongConnectionRecordInput(channelId: "srwebsocket",
 /// eventType: .packet, ts: now, payloadBase64: raw)`。
 public struct LongConnectionRecordInput: Codable, Sendable {
-    /// 业务方注册的通道标识（如 "xcpush_tcp"），多框架共存区分维度。必填。
+    /// 业务方注册的通道标识（如 "srwebsocket"），多框架共存区分维度。必填。
     public var channelId: String
     /// 通用事件类型（平台无关）。必填。
     public var eventType: LongConnectionEventType
@@ -253,7 +253,7 @@ final class LongConnectionCollector: @unchecked Sendable {
 
     /// 注册一条长连接通道（可多次调用，支持多框架共存）。
     /// - Parameters:
-    ///   - channelId: 通道标识（全局唯一，如 "xcpush_tcp"）。
+    ///   - channelId: 通道标识（全局唯一，如 "srwebsocket"）。
     ///   - metadata: 通道元信息（可选，如框架名/版本）。
     func registerChannel(_ channelId: String, metadata: [String: String]? = nil) {
         guard !channelId.isEmpty else { return }
@@ -265,7 +265,7 @@ final class LongConnectionCollector: @unchecked Sendable {
     /// 注册通道编解码器（L4；业务层把私有协议解码能力注入 SDK）。
     /// 注册后 SDK 收到该通道的 raw packet（无 payloadText）会自动调 decode。
     /// - Parameters:
-    ///   - channelId: 通道标识（与注入记录 channelId 一致，如 "xcpush_tcp"）。
+    ///   - channelId: 通道标识（与注入记录 channelId 一致，如 "srwebsocket"）。
     ///   - coder: 解码器实例；同通道重复注册覆盖旧实例。
     func registerCoder(_ channelId: String, coder: any MockNetPackChannelCoder) {
         guard !channelId.isEmpty else { return }

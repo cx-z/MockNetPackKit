@@ -21,9 +21,9 @@ import Foundation
 /// 长连接框架适配器（L6.1a）。
 ///
 /// 每个适配器声明：
-/// - `adapterId`：适配器标识（L6.2 采集标注用，Web 展示能力来源，如 "xcpush"）；
+/// - `adapterId`：适配器标识（L6.2 采集标注用，Web 展示能力来源，如 "srwebsocket"）；
 /// - `channelId`：归属的长连接通道标识（与 LongConnectionRecordInput.channelId
-///   一致，多框架共存区分维度，如 "xcpush_tcp"）；
+///   一致，多框架共存区分维度，如 "srwebsocket"）；
 /// - `probeClassNames`：探测目标类名列表（NSClassFromString，任一命中即视为
 ///   该框架已加载）；
 /// - `installIfNeeded()`：安装 hook（幂等），返回是否安装成功（启用）。

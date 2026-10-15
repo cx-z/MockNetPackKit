@@ -37,7 +37,7 @@ final class LongConnAdapterRegistry: @unchecked Sendable {
     }
 
     /// 探测结果日志出口（L6.1b 优雅回退可观测；默认 SDKLog.info，
-    /// 测试注入 fake 记录——仿 XCPushLongConnRecorder.recordSink 模式）。
+    /// 测试注入 fake 记录——仿适配器模块采集记录器的 recordSink 模式）。
     var logSink: (String) -> Void = { SDKLog.info($0, category: "longconn") }
 
     private let lock = NSLock()
