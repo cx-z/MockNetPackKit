@@ -115,9 +115,12 @@ To return to an unconfigured state, call `stop()`, `resetServer()`, then `start(
 MockNetPackKit/
 ├── Package.swift
 ├── MockNetPackKit.podspec
-├── Sources/MockNetPackKit/
+├── Sources/MockNetPackKit/             # 主 SDK：协议 + registry + 通用采集/连接/HTTP mock（纯注册制）
+├── Sources/MockNetPackKitXCPush/       # XCPush 适配器（SwiftPM 独立 target MockNetPackKitXCPush）
+├── Sources/MockNetPackKitXCPushObjC/   # XCPush ObjC 桥（DelegateProxy / InboxDecoder）
 ├── Sources/MockNetPackSmoke/
 ├── Tests/MockNetPackKitTests/
+├── Tests/MockNetPackKitXCPushTests/
 └── knowledgebase/
 ```
 
@@ -129,3 +132,63 @@ swift test
 ```
 
 Module documentation is in [knowledgebase/overview.md](knowledgebase/overview.md), [architecture.md](knowledgebase/architecture.md), and [code-map.md](knowledgebase/code-map.md). The public API is defined in `Sources/MockNetPackKit/MockNetPackKit.swift`. Verify real-device capture, QR pairing, and Release isolation in the host project.
+
+## Long-connection adapters (registration-only)
+
+Long-connection capture and push mock are **adapter-based and registration-only**
+(decision D-L6.4, 2026-10-15): the SDK auto-registers **no** framework adapter.
+An adapter probes the host process for a specific framework class
+(`NSClassFromString`), installs a zero-intrusion proxy when the class is loaded,
+and reports every long-connection event with an **adapter id** (shown in the Web
+detail page as the "采集方式 / capture source" badge, e.g. `xcpush 适配器`).
+
+### Current adapters
+
+| Adapter | Framework probed | adapter id | channel id |
+| --- | --- | --- | --- |
+| `XCPushSocketAdapter` (in this pod / SwiftPM target `MockNetPackKitXCPush`) | FDSocketService `XCPushSocket` | `xcpush` | `xcpush_tcp` |
+
+Adapters for SRWebSocket / Starscream / MQTT and other frameworks are not shipped
+yet; the protocol is open for them (see "Writing an adapter" below).
+
+### Integration (3 steps)
+
+```ruby
+# Podfile (Debug configuration only)
+pod 'MockNetPackKit', :git => 'https://github.com/cx-z/MockNetPackKit.git',
+    :tag => '1.0.3', :configurations => ['Debug']
+```
+
+```swift
+import MockNetPackKit
+
+// Once, before start():
+MockNetPackKit.registerLongConnAdapter(XCPushSocketAdapter.self)
+MockNetPackKit.start(did: UIDevice.deviceID)
+```
+
+That is the whole integration: **no framework-specific code in the host app**.
+Without registration the long-connection capability stays silently disabled
+(no crash, no error, observable via a fallback log entry).
+
+### Registration semantics
+
+- **Registration is the only way in.** An unregistered adapter is never probed
+  or enabled.
+- **Idempotent**: re-registering the same `adapterId` is ignored.
+- **Multiple adapters coexist**: each adapter probes its own framework class and
+  captures independently (channel id distinguishes the sources); probing order
+  follows registration order.
+- **Graceful fallback**: a registered adapter whose framework class is not
+  loaded is skipped silently (L6.1b).
+- **Push mock**: the XCPush adapter, once installed (Debug), also mounts the L7
+  push-mock injector (`PushMockInjecting`) — no extra host wiring.
+
+### Writing an adapter
+
+Implement the public protocol `LongConnAdapter` (static requirements
+`adapterId`, `channelId`, `probeClassNames`, `installIfNeeded()`) plus, for
+push mock, `PushMockInjecting`; register via
+`MockNetPackKit.registerLongConnAdapter(_:)`. Ship the adapter as a separate
+SwiftPM target / pod that depends on `MockNetPackKit` (the main SDK never
+depends on a concrete adapter).
