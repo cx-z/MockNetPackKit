@@ -30,16 +30,19 @@
 //
 
 import Foundation
-#if canImport(MockNetPackKitObjC)
-import MockNetPackKitObjC
+#if canImport(MockNetPackKitXCPushObjC)
+import MockNetPackKitXCPushObjC
 #else
-import MockNetPackKit
+import MockNetPackKitXCPush
 #endif
+import MockNetPackKit
 
 #if DEBUG
 
 /// XCPush 模拟推送引擎（单例；Debug-only，Release 构建零残留）。
-final class XCPushMockInterceptor: @unchecked Sendable {
+/// L6.1a 重做：实现主 SDK 的 PushMockInjecting 协议（L7 注入解耦——
+/// 适配器模块在安装成功后挂载到 PushMockRuleController.mockInjector）。
+final class XCPushMockInterceptor: @unchecked Sendable, PushMockInjecting {
 
     static let shared = XCPushMockInterceptor()
 

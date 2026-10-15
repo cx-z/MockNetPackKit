@@ -12,7 +12,11 @@
 //
 //  实现要点：
 //  - 不依赖 FDSocketService：`NSClassFromString` 探测类 + ObjC runtime swizzle；
-//    框架未加载时 install no-op（与 L6 registry 探测同思路，当前仅做单一类）。
+//    框架未加载时 install no-op。
+//  - L6.1a 适配器 registry 化：本适配器实现 LongConnAdapter 协议
+//    （adapterId="xcpush" / channelId="xcpush_tcp" / probeClassNames=["XCPushSocket"]），
+//    由 LongConnAdapterRegistry 按注册顺序探测启用（决策 D-L6.1 Swift 协议、
+//    D-L6.2 内置+开放注册、D-L6.3 多适配器共存）。
 //  - 代理对象 `XCPushDelegateProxy`（ObjC 承载，见 include/XCPushDelegateProxy.h）：
 //    显式实现 XCAsyncSocketDelegate 全部 6 回调 + respondsToSelector /
 //    methodSignatureForSelector / forwardInvocation 兜底（未来新增回调自动
@@ -26,17 +30,23 @@
 
 import Foundation
 import ObjectiveC
-// 代理本体 XCPushDelegateProxy 在独立 C target（SwiftPM，模块 MockNetPackKitObjC）；
-// CocoaPods 集成下 .h/.m 编入 pod 自身模块（MockNetPackKit），条件 import 兼容两者。
-#if canImport(MockNetPackKitObjC)
-import MockNetPackKitObjC
+// 代理本体 XCPushDelegateProxy 在独立 C target（SwiftPM，模块 MockNetPackKitXCPushObjC）；
+// CocoaPods 集成下 .h/.m 编入 pod 自身模块（MockNetPackKitXCPush），条件 import 兼容两者。
+#if canImport(MockNetPackKitXCPushObjC)
+import MockNetPackKitXCPushObjC
 #else
-import MockNetPackKit
+import MockNetPackKitXCPush
 #endif
+// 主 SDK 类型：LongConnAdapter 协议 / registry / 采集 / L7 PushMockInjecting。
+import MockNetPackKit
 
 /// L5.1/L5.2 XCPushSocket 适配器：swizzle `setDelegate:` 插入 `XCPushDelegateProxy`，
 /// 并 swizzle 路由/心跳/发送方法观察出站行为。
-enum XCPushSocketAdapter {
+/// L6.1a：实现 `LongConnAdapter`，由 registry 探测启用。
+/// L6.1a 重做（D-L6.4 独立模块）：本适配器在独立模块 MockNetPackKitXCPush，
+/// 业务方显式 `MockNetPackKit.registerLongConnAdapter(XCPushSocketAdapter.self)`
+/// 注册（唯一接入方式）→ 协议实现公开。
+public enum XCPushSocketAdapter: LongConnAdapter {
 
     /// 锁保护的状态（Swift 6 并发安全：@unchecked Sendable 容器）。
     private final class State: @unchecked Sendable {
@@ -144,15 +154,35 @@ enum XCPushSocketAdapter {
     private static let setDelegateSelector = NSSelectorFromString("setDelegate:")
     private static let originalSetDelegateSelector = NSSelectorFromString("mnp_original_setDelegate:")
 
+    // MARK: - LongConnAdapter（L6.1a 适配器 registry 化；D-L6.4 公开协议面）
+
+    /// 适配器标识（L6.2 采集标注用，Web 展示能力来源）。
+    public static let adapterId = "xcpush"
+    /// 归属通道标识（与采集器 channelId 一致，多框架共存区分维度）。
+    public static var channelId: String { XCPushLongConnRecorder.channelId }
+    /// 探测目标类名（FDSocketService 的 XCPushSocket）。
+    public static var probeClassNames: [String] { ["XCPushSocket"] }
+    /// 协议入口：探测声明的类名，命中即安装（幂等）。
+    /// - Returns: 是否安装成功（启用）；类未加载 → false（registry 静默跳过）。
+    public static func installIfNeeded() -> Bool {
+        for className in probeClassNames {
+            if installIfNeeded(className: className) { return true }
+        }
+        return false
+    }
+
     // MARK: - 安装
 
     /// 安装适配器（幂等）：探测类存在后 swizzle `setDelegate:` 与出站观察方法。
-    /// - Parameter className: 目标类名，默认 "XCPushSocket"；测试注入 fake 类。
-    static func installIfNeeded(className: String = "XCPushSocket") {
+    /// - Parameter className: 目标类名；测试注入 fake 类。
+    /// - Returns: 是否安装成功（类不存在 → false，调用方静默跳过；
+    ///   已安装同类 → true，幂等命中）。
+    @discardableResult
+    static func installIfNeeded(className: String) -> Bool {
         state.lock.lock()
         defer { state.lock.unlock() }
-        guard !state.installedClasses.contains(className) else { return }
-        guard let cls = NSClassFromString(className) else { return }   // 框架未加载：no-op，可重试
+        guard !state.installedClasses.contains(className) else { return true }
+        guard let cls = NSClassFromString(className) else { return false }   // 框架未加载：no-op，可重试
         state.targetClass = cls
 
         // 1) setDelegate: → 代理包裹
@@ -183,16 +213,23 @@ enum XCPushSocketAdapter {
         // L5.6：内置 coder 自动注册（零侵入——业务侧无需注册解码能力）。
         // 探测到 XCPushSocket 类即说明 FDSocketService 框架在，Sync 类大概率存在；
         // coder 内部 NSClassFromString 二次防御，框架缺类时 decode 返 nil 降级。
-        LongConnectionCollector.shared.registerCoder(XCPushLongConnRecorder.channelId,
-                                                     coder: XCPushChannelCoder())
+        // 经主 SDK 公开入口注册（L6.1a 重做：适配器模块只依赖主 SDK 公开 API）。
+        MockNetPackKit.registerLongConnectionCoder(XCPushLongConnRecorder.channelId,
+                                                   coder: XCPushChannelCoder())
         // L7.2b：模拟推送注入执行器接线（幂等——install 仅一次，闭包仅此一份）。
+        #if DEBUG
         XCPushMockInterceptor.shared.injector = { packet in
             XCPushSocketAdapter.injectFakeTalk(packet: packet)
         }
+        // L6.1a 重做（决策 D-L6.4 注册制）：注入器由适配器模块在安装成功后
+        // 经 PushMockInjecting 协议挂载到主 SDK（主 SDK 不依赖具体框架实现）。
+        PushMockRuleController.shared.mockInjector = XCPushMockInterceptor.shared
+        #endif
         SDKLog.info("XCPush adapter installed, built-in coder registered (channel=\(XCPushLongConnRecorder.channelId))",
                        category: "longconn")
 
         state.installedClasses.insert(className)
+        return true
     }
 
     // MARK: - swizzle 实现（各签名独立；先采集后调用原实现）

@@ -163,6 +163,10 @@ public struct LongConnectionRecordInput: Codable, Sendable {
     public var mocked: Bool = false
     /// 替换该包的 push mock 规则 ID（能力线 L7；服务端据此递增命中统计）。
     public var mockRuleId: String? = nil
+    /// 采集方式标识（L6.2）：哪条适配器采的（如 "xcpush"）；业务侧 API 注入
+    /// 且未标来源的记录由 collector 统一标 "unknown-inject"；老 SDK 不携带
+    /// （Web 缺省展示，零副作用）。
+    public var adapter: String? = nil
     /// 业务接收方标识（业务层分发细节；零侵入模式下留空，Web 如实标注）。
     public var receiver: String? = nil
     /// 业务接收方处理返回值（业务层分发细节；零侵入模式下留空）。
@@ -279,8 +283,14 @@ final class LongConnectionCollector: @unchecked Sendable {
 
     /// 注入一条长连接记录（业务侧桥接层调用；线程安全，内部缓冲）。
     /// 采集实现（开关判断/截断/额度/上报）位于 TrafficCaptureController（L2.1）。
+    /// L6.2：未带 adapter 标识（非适配器采集、纯 API 注入）的记录统一标注
+    /// "unknown-inject"，Web 如实展示能力来源。
     /// - Parameter record: 上传条目（必填 ≤4，见 LongConnectionRecordInput）。
     func record(_ record: LongConnectionRecordInput) {
-        TrafficCaptureController.shared.recordLongConnection(record)
+        var r = record
+        if r.adapter?.isEmpty != false {
+            r.adapter = "unknown-inject"
+        }
+        TrafficCaptureController.shared.recordLongConnection(r)
     }
 }

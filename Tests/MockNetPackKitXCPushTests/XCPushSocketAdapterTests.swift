@@ -18,7 +18,9 @@
 
 import Foundation
 import XCTest
-import MockNetPackKitObjC
+import MockNetPackKitXCPushObjC
+@testable import MockNetPackKitXCPush
+import MockNetPackKit
 @testable import MockNetPackKit
 
 /// 模仿 XCPushSocket 的 delegate 承载类（@objc weak property → 自动合成 setDelegate:）。
@@ -289,6 +291,8 @@ final class XCPushSocketAdapterTests: XCTestCase {
         XCPushSocketAdapter.installIfNeeded(className: "NoSuchClass_XYZ_42")
     }
 
+    // MARK: - 验收 6（续）：重复 install 幂等
+
     func testInstallIsIdempotent() {
         let socket = FakeXCPushSocket()
         let delegate = RecordingDelegate()
@@ -299,5 +303,35 @@ final class XCPushSocketAdapterTests: XCTestCase {
         setDelegate(of: socket, to: delegate)
         let proxy = socket.delegate as? XCPushDelegateProxy
         XCTAssertTrue(proxy?.originalDelegate === delegate)
+    }
+
+    // MARK: - L6.1a 协议契约（registry 化）
+
+    func testAdapterConformsToRegistryContract() {
+        // 协议元信息（L6.2 采集标注 + registry 探测用）。
+        XCTAssertEqual(XCPushSocketAdapter.adapterId, "xcpush")
+        XCTAssertEqual(XCPushSocketAdapter.channelId, "xcpush_tcp")
+        XCTAssertEqual(XCPushSocketAdapter.probeClassNames, ["XCPushSocket"])
+        // 测试环境无 FDSocketService → 协议入口静默返回 false（L6.1b 回退不崩溃）。
+        XCTAssertFalse(XCPushSocketAdapter.installIfNeeded())
+    }
+
+    // MARK: - L6.1a 协议入口探测声明的类名
+
+    func testProtocolInstallProbesDeclaredClassName() {
+        let socket = FakeXCPushSocket()
+        let delegate = RecordingDelegate()
+
+        // 协议入口恒探测 probeClassNames（["XCPushSocket"]），测试环境无
+        // FDSocketService → 返回 false（不安装、不崩溃）；className 变体
+        // 安装 fake 类的代理链路不受影响、照常工作。
+        XCTAssertFalse(XCPushSocketAdapter.installIfNeeded(),
+                       "协议入口探测声明类名，测试环境应未命中返回 false")
+
+        XCTAssertTrue(XCPushSocketAdapter.installIfNeeded(className: "FakeXCPushSocket"))
+        setDelegate(of: socket, to: delegate)
+        let proxy = socket.delegate as? XCPushDelegateProxy
+        XCTAssertTrue(proxy?.originalDelegate === delegate,
+                      "className 变体安装的代理链路应正常工作")
     }
 }

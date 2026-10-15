@@ -25,7 +25,9 @@ import Foundation
 import XCTest
 import ObjectiveC
 import zlib
-import MockNetPackKitObjC
+import MockNetPackKitXCPushObjC
+@testable import MockNetPackKitXCPush
+import MockNetPackKit
 @testable import MockNetPackKit
 
 /// 可 KVC 提取字段的收包对象（模仿 GPBMessage Packet 的可读字段子集）。
@@ -160,6 +162,7 @@ final class XCPushLongConnRecorderTests: XCTestCase {
         let packet = collected.first { $0.eventType == .packet }
         XCTAssertNotNil(packet)
         XCTAssertEqual(packet?.channelId, "xcpush_tcp")
+        XCTAssertEqual(packet?.adapter, "xcpush", "适配器采集记录应带 adapter 标识（L6.2）")
         XCTAssertEqual(packet?.msgId, "1001")
         XCTAssertEqual(packet?.bizType, "1", "bizType 保持数字字符串，不内置映射（决策 2026-10-13）")
         XCTAssertEqual(packet?.zipType, "0")

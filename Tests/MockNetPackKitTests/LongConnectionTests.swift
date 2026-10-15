@@ -99,6 +99,32 @@ final class LongConnectionTests: XCTestCase {
         return r
     }
 
+    // MARK: - L6.2 adapter 标识：API 注入未标来源 → unknown-inject；已标来源透传
+
+    func testCollectorLabelsUnknownInjectAdapter() {
+        let controller = TrafficCaptureController.shared
+
+        // ① 纯 API 注入（未带 adapter）→ collector 统一标 unknown-inject。
+        LongConnectionCollector.shared.record(makeRecord(msgId: "m-adapter-1"))
+        // ② 适配器采集（带 adapter="xcpush"）→ 透传不覆盖。
+        var adapterRecord = makeRecord(msgId: "m-adapter-2")
+        adapterRecord.adapter = "xcpush"
+        LongConnectionCollector.shared.record(adapterRecord)
+
+        controller.flush()
+        waitUntil { self.longConnUploads().contains { !self.recordsInUpload($0).isEmpty } }
+
+        let records = longConnUploads().flatMap(recordsInUpload)
+        let byMsg = Dictionary(uniqueKeysWithValues: records.compactMap { r -> (String, [String: Any])? in
+            guard let id = r["msgId"] as? String else { return nil }
+            return (id, r)
+        })
+        XCTAssertEqual(byMsg["m-adapter-1"]?["adapter"] as? String, "unknown-inject",
+                       "API 注入未标来源应如实标注 unknown-inject")
+        XCTAssertEqual(byMsg["m-adapter-2"]?["adapter"] as? String, "xcpush",
+                       "已带 adapter 标识的记录应原样透传")
+    }
+
     // MARK: - 验收：开关关闭无上报
 
     func testLongConnDisabledDropsWithoutUpload() {

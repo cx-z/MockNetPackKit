@@ -21,6 +21,8 @@
 //
 
 import Foundation
+// 独立适配器模块（L6.1a 重做）：采集记录上送主 SDK 的 LongConnectionCollector。
+import MockNetPackKit
 
 /// XCPush 长连接事件采集器（单例；主线程调用为主，内部锁保护）。
 final class XCPushLongConnRecorder: @unchecked Sendable {
@@ -288,6 +290,8 @@ final class XCPushLongConnRecorder: @unchecked Sendable {
                             direction: LongConnectionDirection = .in) -> LongConnectionRecordInput {
         var r = LongConnectionRecordInput(channelId: Self.channelId, eventType: event, ts: Date())
         r.direction = direction
+        // L6.2：适配器采集记录如实标注能力来源（"xcpush"；与 registry adapterId 一致）。
+        r.adapter = XCPushSocketAdapter.adapterId
         return r
     }
 

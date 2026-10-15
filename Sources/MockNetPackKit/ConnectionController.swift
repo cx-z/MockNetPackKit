@@ -119,9 +119,11 @@ final class ConnectionController: @unchecked Sendable {
             did: self.did ?? "",
             logHandler: self.logHandler)
 
-        // L5.1：零侵入长连接适配器（XCPushSocket delegate 代理）。幂等安装；
-        // 类未加载（框架未接入）时 no-op，不影响其他能力。
-        XCPushSocketAdapter.installIfNeeded()
+        // L5.1/L6.1a 重做：长连接适配器 registry（纯注册制，决策 D-L6.4）。
+        // NSClassFromString 探测业务方已注册适配器声明的框架类名，命中即自动
+        // 启用；SDK 不内置任何框架适配器。未注册/未探测到 → 静默跳过
+        // （不崩溃、不报错），不影响其他能力（L6.1b 回退日志可观测）。
+        LongConnAdapterRegistry.shared.installAllIfNeeded()
     }
 
     /// 无服务器启动：仅解析 did 并置 `.unconfigured`，不发起网络、不启动采集；
@@ -160,9 +162,9 @@ final class ConnectionController: @unchecked Sendable {
         // 未连接时 isCapturing=false 不拦业务，扫码激活后即全量抓取。
         TrafficCaptureController.shared.arm()
 
-        // L5.1：零侵入长连接适配器（XCPushSocket delegate 代理）。幂等安装；
-        // 无服务器启动同样安装——保证扫码连接建立前创建的 XCPushSocket 即被代理。
-        XCPushSocketAdapter.installIfNeeded()
+        // L5.1/L6.1a 重做：长连接适配器 registry（纯注册制）。无服务器启动
+        // 同样安装——保证扫码连接建立前创建的框架 socket 即被代理。
+        LongConnAdapterRegistry.shared.installAllIfNeeded()
         setConnectionState(.unconfigured)
     }
 

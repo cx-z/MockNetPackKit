@@ -2,7 +2,7 @@ import Foundation
 import os
 
 /// 本地 push mock 规则控制器（能力线 L7）：持有当前生效 push 规则快照，
-/// 供 XCPushMockInterceptor 在业务消费前执行替换。
+/// 供注入器（PushMockInjecting，由适配器模块挂载）在业务消费前执行替换。
 ///
 /// 语义（对齐 MockRuleController 模式 + 技术方案 3.2/3.4 + 决策 D1）：
 /// - 快照来自心跳后按 `pushRulesVersion` 增量拉取
@@ -14,10 +14,20 @@ import os
 ///   已有快照后本次拉取失败 → 沿用旧快照继续 Mock。
 /// - 规则跨会话保留，但仅在代理层拦截钩子启用（Debug-only）且规则
 ///   effective=true 时执行。
-final class PushMockRuleController: @unchecked Sendable {
+/// - 注入器（L6.1a 重做）：由适配器模块在安装成功后挂载
+///   `PushMockInjecting` 实现；未挂载 → 指令跳过待下次心跳（fail-open）。
+public final class PushMockRuleController: @unchecked Sendable {
 
     /// 进程内共享实例。
-    static let shared = PushMockRuleController()
+    public static let shared = PushMockRuleController()
+
+    /// 注入器（框架特定实现；适配器模块安装成功后经 PushMockInjecting 协议
+    /// 挂载；未挂载时模拟推送指令跳过保留待重试）。锁保护。
+    public var mockInjector: PushMockInjecting? {
+        get { lock.lock(); defer { lock.unlock() }; return mockInjectorValue }
+        set { lock.lock(); defer { lock.unlock() }; mockInjectorValue = newValue }
+    }
+    private var mockInjectorValue: PushMockInjecting?
 
     // MARK: - 测试注入点
 
@@ -77,23 +87,28 @@ final class PushMockRuleController: @unchecked Sendable {
     /// 心跳成功后调用：对心跳响应携带的 pending 指令逐条构造假 Packet 并注入
     /// 到当前活跃长连接；注入成功 → ack 回报服务端（指令消费）；注入失败
     /// （无活跃连接 / Packet 构造失败）→ 不 ack，指令保留待下次心跳重试。
-    /// 注入/回报失败均不阻塞心跳周期（fail-open）。
+    /// 注入/回报失败均不阻塞心跳周期（fail-open）。注入器未挂载（无适配器
+    /// 安装）→ 指令跳过保留，待下次心跳（L6.1a 重做注册制语义）。
     func injectPendingCommands(client: ConnectionClient, app: String, did: String,
                                commands: [PushRuleCommand]) async {
         guard !commands.isEmpty else { return }
+        guard let injector = mockInjector else {
+            SDKLog.info("push mock injector unavailable, commands deferred commandCount=\(commands.count)", category: "mock")
+            return
+        }
         var acked: [String] = []
         for command in commands {
-            guard let packet = XCPushMockInterceptor.shared.makePacket(command: command) else {
+            guard let packet = injector.makePacket(command: command) else {
                 SDKLog.error("push mock makePacket failed command=\(command.id), retry next heartbeat", category: "mock")
                 continue
             }
-            guard XCPushMockInterceptor.shared.inject(packet: packet) else {
+            guard injector.inject(packet: packet) else {
                 // 无活跃长连接：保留指令，下次心跳重试。
                 SDKLog.error("push mock inject skipped command=\(command.id) (no active socket), retry next heartbeat", category: "mock")
                 continue
             }
             acked.append(command.id)
-            SDKLog.info("push mock injected command=\(command.id) rule=\(command.ruleId) msgId=\(String(describing: XCPushMockInterceptor.shared.recentInjections(limit: 1).first?.msgId))", category: "mock")
+            SDKLog.info("push mock injected command=\(command.id) rule=\(command.ruleId) msgId=\(String(describing: injector.recentInjections(limit: 1).first?.msgId))", category: "mock")
         }
         guard !acked.isEmpty else { return }
         await ackCommands(client: client, app: app, did: did, ids: acked)

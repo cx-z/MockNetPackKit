@@ -1,8 +1,9 @@
 import XCTest
 @testable import MockNetPackKit
-#if canImport(MockNetPackKitObjC)
-@testable import MockNetPackKitObjC
+#if canImport(MockNetPackKitXCPushObjC)
+@testable import MockNetPackKitXCPushObjC
 #endif
+@testable import MockNetPackKitXCPush
 
 /// L5.6：XCPush 内置 coder——动态解码（测试环境无 FDSocketService/Sync 类，
 /// 覆盖 fallback JSON 直解与不可解降级；Sync protobuf 路径由 UI 验收在真机验证）。

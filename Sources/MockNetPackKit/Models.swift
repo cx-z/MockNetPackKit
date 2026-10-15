@@ -229,13 +229,25 @@ struct PushMockRuleList: Decodable {
 
 /// 一条「模拟推送」pending 指令（契约 PushRuleCommandView，SDK 线）：
 /// 心跳响应携带；SDK 构造 Packet 注入后经 push-rule-commands/ack 回报消费。
-struct PushRuleCommand: Codable, Equatable {
-    let id: String
-    let ruleId: String
-    let channelId: String
-    let bizType: String
+/// L6.1a 重做：适配器模块（MockNetPackKitXCPush）经 PushMockInjecting 协议
+/// 消费本类型 → 公开（跨模块可见）。
+public struct PushRuleCommand: Codable, Equatable {
+    public let id: String
+    public let ruleId: String
+    public let channelId: String
+    public let bizType: String
     /// 替换 payload 文本（与 payloadBase64 二选一）。
-    let payload: String?
+    public let payload: String?
     /// 替换 payload 原始字节（base64）。
-    let payloadBase64: String?
+    public let payloadBase64: String?
+
+    public init(id: String, ruleId: String, channelId: String, bizType: String,
+                payload: String?, payloadBase64: String?) {
+        self.id = id
+        self.ruleId = ruleId
+        self.channelId = channelId
+        self.bizType = bizType
+        self.payload = payload
+        self.payloadBase64 = payloadBase64
+    }
 }

@@ -8,6 +8,11 @@ It includes the connection layer (device registration, heartbeat, session state)
 a URLProtocol interceptor for capturing HTTP traffic, and a local mock client.
 Whether to integrate (and in which build configurations) is decided by the
 host app; the integrating app links this pod in Debug configuration only.
+
+L6.1a rework (2026-10-15, decision D-L6.4): this main pod contains NO concrete
+long-connection framework adapter. Framework adapters ship as separate pods
+(e.g. MockNetPackKitXCPush); the host app explicitly registers one via
+MockNetPackKit.registerLongConnAdapter(_:) — registration is the only way in.
                        DESC
   s.homepage         = 'https://github.com/cx-z/mockd'
   s.license          = { :type => 'Proprietary' }
@@ -15,8 +20,8 @@ host app; the integrating app links this pod in Debug configuration only.
   s.source           = { :git => 'https://github.com/cx-z/MockNetPackKit.git', :tag => '1.0.3' }
   s.ios.deployment_target = '13.0'
   s.swift_version    = '5.0'
-  s.source_files     = 'Sources/MockNetPackKit/**/*.{swift}', 'Sources/MockNetPackKitObjC/**/*.{h,m}'
-  s.public_header_files = 'Sources/MockNetPackKitObjC/include/*.h'
+  # 纯注册制（D-L6.4）：主 pod 不含任何框架适配器（XCPush 在 MockNetPackKitXCPush）。
+  s.source_files     = 'Sources/MockNetPackKit/**/*.{swift}'
   s.frameworks       = 'Foundation', 'AVFoundation'   #  扫码连接（AVCaptureSession）
-  s.libraries        = 'z'   #  registerBinaryCodec 内置 gzip（zlib deflate）；L5.2 解压
+  s.libraries        = 'z'   #  registerBinaryCodec 内置 gzip（zlib deflate）
 end

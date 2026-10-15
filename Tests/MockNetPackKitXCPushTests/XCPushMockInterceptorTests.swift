@@ -22,7 +22,9 @@ import Foundation
 import XCTest
 import ObjectiveC
 import Darwin
-import MockNetPackKitObjC
+import MockNetPackKitXCPushObjC
+@testable import MockNetPackKitXCPush
+import MockNetPackKit
 @testable import MockNetPackKit
 
 /// 可 KVC 读写的假 Packet（模仿 GPBMessage Packet 字段子集；显式 @objc 名，

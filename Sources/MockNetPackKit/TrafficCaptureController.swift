@@ -81,7 +81,7 @@ final class TrafficCaptureController: @unchecked Sendable {
     /// 注入/代理双路径去重窗口表（key = "\(channelId)|\(msgId)" → 最近入队时间）。
     /// 注入模式（L4 业务桥接）与代理模式（L5 自动采集）并存时，同一通道同一包会在
     /// 毫秒级内各上报一次：窗口内重复直接丢弃；窗口外重复（服务端真实重发）保持
-    /// 代理层 duplicate 标记语义不受影响（由 XCPushLongConnRecorder.duplicateIDs 判定）。
+    /// 代理层 duplicate 标记语义不受影响（由适配器模块的采集记录器判定 duplicateIDs）。
     /// 不绑定会话生命周期——socket 重连时代理层会重置其 duplicateIDs，本窗口表仅按
     /// 时间过期清理，避免无限增长。
     private var longConnDedupWindow: [String: Date] = [:]

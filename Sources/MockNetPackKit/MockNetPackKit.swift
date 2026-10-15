@@ -109,6 +109,18 @@ public enum MockNetPackKit {
         LongConnectionCollector.shared.registerCoder(channelId, coder: coder)
     }
 
+    /// 注册长连接框架适配器（L6.1a 重做；能力线 L6 推广形态，**纯注册制**——
+    /// 决策 D-L6.4：SDK 不内置任何框架适配器，注册是唯一接入方式）。
+    /// 业务方接入长连接框架（XCPush 适配器模块 / SRWebSocket / Starscream /
+    /// MQTT 或私有框架）时按此注册，SDK 启动时按注册顺序 NSClassFromString
+    /// 探测，框架已加载即自动启用——业务侧仅一行注册、零框架定制代码；
+    /// 未注册任何适配器 → 长连接能力静默未启用（不崩溃、不报错）。
+    /// - Parameter adapter: 适配器类型（实现 LongConnAdapter，声明探测类名 /
+    ///   channelId / 安装逻辑；同 adapterId 重复注册忽略）。
+    public static func registerLongConnAdapter(_ adapter: LongConnAdapter.Type) {
+        LongConnAdapterRegistry.shared.register(adapter)
+    }
+
     /// 长连接采集开关（默认开）；关闭后仅丢弃、不影响业务侧打点。
     public static var longConnectionCaptureEnabled: Bool {
         get { LongConnectionCollector.shared.captureEnabled }

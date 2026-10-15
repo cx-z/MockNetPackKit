@@ -8,11 +8,12 @@
 //
 
 import Foundation
-#if canImport(MockNetPackKitObjC)
-import MockNetPackKitObjC
+#if canImport(MockNetPackKitXCPushObjC)
+import MockNetPackKitXCPushObjC
 #else
-import MockNetPackKit
+import MockNetPackKitXCPush
 #endif
+import MockNetPackKit
 
 /// XCPush 通道编解码器（channelId = "xcpush_tcp"）。
 /// 与一期业务侧 coder 语义一致：Sync protobuf → bussdata(data 子字典) → pretty JSON；
