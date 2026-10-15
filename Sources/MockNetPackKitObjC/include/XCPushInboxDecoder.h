@@ -16,4 +16,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// 把 XCPush bizData 字节解为可读 pretty-JSON 文本；不可解时返回 nil。
 extern NSString *_Nullable MNPXCPushDecodeToJSON(NSData *raw);
 
+// MARK: - L7.2b 模拟推送（能力线 L7 模拟推送形态）
+/// 从序列化 Packet（ACK data）解析 msgId；解不出返回 0。
+extern uint64_t MNPPacketMsgId(NSData *_Nullable raw);
+
 NS_ASSUME_NONNULL_END

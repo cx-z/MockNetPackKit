@@ -118,12 +118,10 @@ final class XCPushLongConnRecorder: @unchecked Sendable {
         }
     }
 
-    /// 收包转发前（同步栈内：mock 拦截（L5.3，Debug-only）→ 解析并压栈；
-    /// 非 message 包就地处理）。拦截先于采集：Web 展示与业务实际收到一致。
+    /// 收包转发前（同步栈内：解析并压栈；非 message 包就地处理）。
+    /// L7.2b：模拟推送注入的假包同样经此链路（注入走 proxy 完整转发链），
+    /// 先做碰撞解除（真实包 msgId ∈ fake 集合 → 移除放行，决策 D4）。
     func onWillForwardRead(sock: AnyObject, talk: AnyObject, tag: Int) {
-        #if DEBUG
-        XCPushMockInterceptor.shared.intercept(talk: talk)
-        #endif
         withLock {
             // accountMid：任一收包带 memId 即提取（对齐 "memId 从 Packet 提取"）。
             if let memId = packetMemId(talk), memId != 0 {
@@ -131,6 +129,14 @@ final class XCPushLongConnRecorder: @unchecked Sendable {
             }
             switch packetType(talk) {
             case PacketType.message.rawValue:
+                // L7.2b 碰撞解除：真实收包 msgId ∈ fake 集合 → 移除 + 放行 + 审计
+                // （真包优先；移除后其 ACK 不再拦截、采集按真实包展示）。
+                // 注入中的假包豁免（注入点根除配套——假包经完整转发链时不得
+                // 被当成碰撞移除，集合需保留到业务 ACK 周期结束）。
+                if let msgId = packetMsgId(talk),
+                   !XCPushMockInterceptor.shared.isInjecting(msgId: msgId) {
+                    XCPushMockInterceptor.shared.resolveCollision(msgId: msgId)
+                }
                 pending = makePendingPacket(talk)
                 snapshot.receivedMessageCount = Int64(duplicateIDs.count)
             case PacketType.synack.rawValue:
@@ -210,13 +216,28 @@ final class XCPushLongConnRecorder: @unchecked Sendable {
         }
     }
 
+    /// L7.2b：模拟推送 ACK 被拦截（业务对假包的 ACK，msgId ∈ fake 集合，
+    /// adapter 已丢弃不上行）。旁路上报一条独立事件（Web「Mock ACK 拦截」），
+    /// 供审计：假 push 的 ACK 未泄漏到真实长连接服务端。
+    func onMockedAckIntercepted(msgId: UInt64) {
+        withLock {
+            snapshot.lastAckMsgId = String(msgId)
+            var r = makeRecord(.ackBlocked)
+            r.msgId = String(msgId)
+            record(r)
+        }
+    }
+
     // MARK: - 内部
 
     private func makePendingPacket(_ talk: AnyObject) -> PendingPacket {
         let msgId = packetMsgId(talk) ?? 0
         let zipType = packetZipType(talk) ?? 0
         let raw = packetBizData(talk)
-        let duplicate = !duplicateIDs.insert(msgId).inserted
+        // L7.2b：假 push（模拟推送注入）msgId ∈ fakeMsgId 集合 → 不进去重表
+        // （未来同值真 push 不被误标 duplicate）、不重复计数。
+        let isFake = XCPushMockInterceptor.shared.contains(msgId: msgId)
+        let duplicate = !isFake && !duplicateIDs.insert(msgId).inserted
         // zipType=1 解压；失败回退原始字节。duplicate 包同样解压（Web 展示一致）。
         let payload: Data?
         if let raw, zipType == 1 {
@@ -241,6 +262,14 @@ final class XCPushLongConnRecorder: @unchecked Sendable {
         r.empty = p.empty
         r.ackSent = p.ackSent
         r.status = p.duplicate ? .duplicate : (p.empty ? .emptyData : .handled)
+        // L7.2b/2c：假 push mocked 标记（Debug-only；Release 构建零残留，
+        // 字段保持默认）。marker 表由注入注册（msgId → ruleId），采集识别复用。
+        #if DEBUG
+        if let ruleId = XCPushMockInterceptor.shared.mockRuleId(for: p.msgId) {
+            r.mocked = true
+            r.mockRuleId = ruleId
+        }
+        #endif
         if p.empty {
             r.payloadPreview = "(empty)"       // 对齐 F4：三选一占位
         } else if let payload = p.payload {

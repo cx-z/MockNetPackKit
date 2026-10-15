@@ -285,6 +285,16 @@ final class ConnectionController: @unchecked Sendable {
             await MockRuleController.shared.syncIfNeeded(
                 client: client, app: appID, did: did,
                 serverVersion: resp.rulesVersion ?? 0)
+            // 能力线 L7：按服务端 pushRulesVersion 增量拉取 push mock 规则快照
+            // （fail-open；老服务端不下发该字段 → 按 0 处理，SDK 不拉取）。
+            await PushMockRuleController.shared.syncIfNeeded(
+                client: client, app: appID, did: did,
+                serverVersion: resp.pushRulesVersion ?? 0)
+            // 能力线 L7 模拟推送：心跳响应携带的 pending 指令 → 构造假 Packet
+            // 注入当前活跃长连接 → ack 回报（无指令时 no-op）。
+            await PushMockRuleController.shared.injectPendingCommands(
+                client: client, app: appID, did: did,
+                commands: resp.pushCommands ?? [])
             finishCycle(gen: gen)
             scheduleNext(delay: heartbeatInterval())
 

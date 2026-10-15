@@ -45,6 +45,28 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^timeoutReadHook)(long tag);
 @property (nonatomic, copy, nullable) void (^timeoutWriteHook)(long tag);
 
+// L7.2b 模拟推送注入（能力线 L7 模拟推送形态）：把构造好的假 Packet 当作
+// 一次真实收包走完整转发链（willForwardReadHook → originalDelegate →
+// didForwardReadHook），业务侧与真实推送零差异；不经过 XCPush 收包判重
+// 路径（注入点根除，决策 D4：假 msgId 永不进 vReceivedMessageIds）。
+// socket 为真实 XCPushSocket（sock 参数不能传 nil——业务 delegate 的
+// 非可选签名会因 nil 崩溃，L7.2b 调试中实测 signal 11）。
+//
+// 线程对齐（真机崩溃 #3 修复）：真实收包在 XCPush socket 的 delegate queue
+// 线程回调，业务在该线程做 Realm 等线程亲和数据写；注入若发生在心跳回调线程
+// 直接同步转发 → RLMException "Realm accessed from incorrect thread"。
+// 本方法先 dispatch_async 回「记录到的真实收包 queue」（连接/收包回调首次
+// 到达时记录），在该 queue 上再走转发链——业务看到的执行线程与真实推送一致。
+// willInject/didInject 在转发链前后于目标 queue 上同步执行（注入标记/解标记）。
+- (void)injectFakeTalk:(id)talk
+              onSocket:(id)socket
+            willInject:(nullable void (^)(void))willInjectBlock
+             didInject:(nullable void (^)(void))didInjectBlock;
+
+/// 测试钩子：在测试主线程上记录当前 queue 为「收包 queue」，使注入派发
+/// 可被 XCTestExpectation 等待（真机上由连接/收包回调自动记录）。
++ (void)mnp_recordCurrentReadQueueForTesting;
+
 @end
 
 NS_ASSUME_NONNULL_END

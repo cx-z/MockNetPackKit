@@ -81,3 +81,42 @@ NSString *_Nullable MNPXCPushDecodeToJSON(NSData *raw) {
     NSLog(@"[MNP-decoder] all paths failed -> nil");
     return nil;
 }
+
+// MARK: - L7.2b 模拟推送（能力线 L7 模拟推送形态）
+
+/// 从序列化 Packet（如 ACK data）解析 msgId（动态 GPB 解包；解不出返回 0）。
+/// 用于模拟推送 ACK 拦截（决策 D4）：业务对假包发的 ACK 经此提取 msgId，
+/// SDK 判定 ∈ fakeMsgId 集合 → 丢弃不上行。
+uint64_t MNPPacketMsgId(NSData *raw) {
+    if (raw.length == 0) {
+        return 0;
+    }
+    Class packetCls = NSClassFromString(@"Packet");
+    if (!packetCls || ![packetCls respondsToSelector:@selector(parseFromData:error:)]) {
+        return 0;
+    }
+    @try {
+        NSMethodSignature *sig = [packetCls methodSignatureForSelector:@selector(parseFromData:error:)];
+        if (!sig) {
+            return 0;
+        }
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        [inv setSelector:@selector(parseFromData:error:)];
+        [inv setTarget:packetCls];
+        NSError *err = nil;
+        [inv setArgument:&raw atIndex:2];
+        [inv setArgument:&err atIndex:3];
+        [inv invoke];
+        void *result = NULL;
+        [inv getReturnValue:&result];
+        id pkt = (__bridge id)result;
+        if (!pkt || ![pkt respondsToSelector:@selector(msgId)]) {
+            return 0;
+        }
+        NSNumber *n = [pkt valueForKey:@"msgId"];
+        return n.unsignedLongLongValue;
+    } @catch (__unused NSException *e) {
+        NSLog(@"[MNP-packet] parse msgId exception: %@", e);
+        return 0;
+    }
+}

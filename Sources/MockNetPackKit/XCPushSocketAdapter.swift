@@ -55,6 +55,92 @@ enum XCPushSocketAdapter {
         UnsafeRawPointer(Unmanaged.passUnretained(proxyAssociationToken).toOpaque())
     }
 
+    // MARK: - L7.2b 模拟推送注入（活跃 proxy 弱引用表）
+
+    /// 活跃 proxy 弱引用表（L7.2b 注入用）：setDelegate: 首次包裹时登记，
+    /// 注入遍历取第一个可用的（原 delegate 非 nil）。同时弱持有 socket——
+    /// 注入转发链的 sock 参数必须传真实 socket（nil 会崩业务 delegate 的
+    /// 非可选签名；L7.2b 调试中实测 signal 11）。
+    private final class WeakProxyBox: @unchecked Sendable {
+        weak var proxy: XCPushDelegateProxy?
+        weak var socket: AnyObject?
+        init(_ proxy: XCPushDelegateProxy, socket: AnyObject) {
+            self.proxy = proxy
+            self.socket = socket
+        }
+    }
+    private static let proxyState = ProxyState()
+    private final class ProxyState: @unchecked Sendable {
+        let lock = NSLock()
+        var activeProxies: [WeakProxyBox] = []
+    }
+
+    /// ACK 包 msgId 解析器（默认为 ObjC helper MNPPacketMsgId；测试注入 fake）。
+    /// L7.2b：业务对假包 ACK 经此提取 msgId，判定 ∈ fakeMsgId 集合后丢弃。
+    /// 锁保护的可变全局（Swift 6 并发安全）。
+    private static let ackResolverState = AckResolverState()
+    private final class AckResolverState: @unchecked Sendable {
+        let lock = NSLock()
+        var resolver: (AnyObject) -> UInt64 = { data in
+            MNPPacketMsgId(data as? Data ?? Data())
+        }
+    }
+    static var ackMsgIdResolver: (AnyObject) -> UInt64 {
+        get {
+            ackResolverState.lock.lock()
+            defer { ackResolverState.lock.unlock() }
+            return ackResolverState.resolver
+        }
+        set {
+            ackResolverState.lock.lock()
+            ackResolverState.resolver = newValue
+            ackResolverState.lock.unlock()
+        }
+    }
+
+    /// 注入假 Packet 到当前活跃长连接（L7.2b 模拟推送）。
+    /// 经 proxy.injectFakeTalk:onSocket: 走完整转发链（hooks + originalDelegate），
+    /// 不经过 XCPush 收包判重路径（注入点根除，决策 D4）。
+    /// 线程对齐（真机崩溃 #3 修复）：proxy 内部先 dispatch_async 回记录的
+    /// 真实收包 queue，在该 queue 上走转发链——与真实推送同一执行线程，
+    /// 业务 Realm 等线程亲和写不崩。注入期间标记 injecting（recorder 碰撞
+    /// 解除豁免该 msgId——假包不能被当成"真实收包碰撞"移除），mark/unmark
+    /// 随转发链在目标 queue 上成对执行。
+    /// - Returns: 是否入队成功（无活跃连接 → false，指令保留待下次心跳）。
+    @discardableResult
+    static func injectFakeTalk(packet: AnyObject) -> Bool {
+        proxyState.lock.lock()
+        defer { proxyState.lock.unlock() }
+        // 清理已失效 proxy（originalDelegate 为 nil / 代理已死），取第一个可用注入。
+        proxyState.activeProxies.removeAll { $0.proxy?.originalDelegate == nil }
+        for box in proxyState.activeProxies {
+            if let proxy = box.proxy, let socket = box.socket {
+                let msgId = (packet.value(forKey: "msgId") as? NSNumber)?.uint64Value ?? 0
+                proxy.injectFakeTalk(packet, onSocket: socket,
+                    willInject: { XCPushMockInterceptor.shared.markInjecting(msgId: msgId) },
+                    didInject: { XCPushMockInterceptor.shared.unmarkInjecting(msgId: msgId) })
+                return true
+            }
+        }
+        SDKLog.error("push mock inject skipped: no active push socket", category: "mock")
+        return false
+    }
+
+    /// 当前活跃 push 连接数（测试/健康检查）。
+    static var activePushConnectionCount: Int {
+        proxyState.lock.lock()
+        defer { proxyState.lock.unlock() }
+        proxyState.activeProxies.removeAll { $0.proxy?.originalDelegate == nil }
+        return proxyState.activeProxies.count
+    }
+
+    /// 清空活跃 proxy 表（测试用）。
+    static func resetActiveProxiesForTesting() {
+        proxyState.lock.lock()
+        proxyState.activeProxies.removeAll()
+        proxyState.lock.unlock()
+    }
+
     private static let setDelegateSelector = NSSelectorFromString("setDelegate:")
     private static let originalSetDelegateSelector = NSSelectorFromString("mnp_original_setDelegate:")
 
@@ -99,6 +185,10 @@ enum XCPushSocketAdapter {
         // coder 内部 NSClassFromString 二次防御，框架缺类时 decode 返 nil 降级。
         LongConnectionCollector.shared.registerCoder(XCPushLongConnRecorder.channelId,
                                                      coder: XCPushChannelCoder())
+        // L7.2b：模拟推送注入执行器接线（幂等——install 仅一次，闭包仅此一份）。
+        XCPushMockInterceptor.shared.injector = { packet in
+            XCPushSocketAdapter.injectFakeTalk(packet: packet)
+        }
         SDKLog.info("XCPush adapter installed, built-in coder registered (channel=\(XCPushLongConnRecorder.channelId))",
                        category: "longconn")
 
@@ -175,10 +265,16 @@ enum XCPushSocketAdapter {
         let proxy = XCPushDelegateProxy(originalDelegate: delegate)
         attachRecorderHooks(to: proxy)
         objc_setAssociatedObject(socket, proxyAssociationKey, proxy, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        // L7.2b：登记活跃 proxy（模拟推送注入目标；weak 持有 socket 供注入转发链）。
+        proxyState.lock.lock()
+        proxyState.activeProxies.append(WeakProxyBox(proxy, socket: socket))
+        proxyState.lock.unlock()
         _ = socket.perform(originalSetDelegateSelector, with: proxy)
     }
 
     /// 采集 hooks 接线（转发旁路；closeRead 无对应 KK Debug 语义，不采集）。
+    /// 注：L7.2b 模拟推送注入时 sock 传 nil——hook 闭包须防御（nil 不能
+    /// 强转 AnyObject，否则崩溃；recorder 不依赖 sock 参数）。
     private static func attachRecorderHooks(to proxy: XCPushDelegateProxy) {
         let recorder = XCPushLongConnRecorder.shared
         proxy.didConnectHook = { socket in
@@ -188,10 +284,14 @@ enum XCPushSocketAdapter {
             recorder.onDisconnected(socket: socket as AnyObject, error: error as AnyObject?)
         }
         proxy.willForwardReadHook = { sock, talk, tag in
-            recorder.onWillForwardRead(sock: sock as AnyObject, talk: talk as AnyObject, tag: tag)
+            let s: AnyObject = (sock as AnyObject?) ?? NSNull()
+            let t: AnyObject = (talk as AnyObject?) ?? NSNull()
+            recorder.onWillForwardRead(sock: s, talk: t, tag: tag)
         }
         proxy.didForwardReadHook = { sock, talk, tag in
-            recorder.onDidForwardRead(sock: sock as AnyObject, talk: talk as AnyObject, tag: tag)
+            let s: AnyObject = (sock as AnyObject?) ?? NSNull()
+            let t: AnyObject = (talk as AnyObject?) ?? NSNull()
+            recorder.onDidForwardRead(sock: s, talk: t, tag: tag)
         }
         proxy.timeoutReadHook = { tag in
             recorder.onTimeoutRead(tag: tag)
@@ -234,12 +334,27 @@ enum XCPushSocketAdapter {
     }
 
     /// send:tag: 拦截（tag=12345 = ACK 发送）。
+    /// L7.2b：先保留 L5 ackSent 栈内关联采集，再按 fakeMsgId 集合拦截——
+    /// 业务对假包的 ACK（msgId ∈ 集合）丢弃不上行 + 旁路上报（决策 D4）；
+    /// 真实 push ACK 照常发送，零影响。
     private static func handleSendDataTag(socket: AnyObject, data: AnyObject, tag: Int) {
         XCPushLongConnRecorder.shared.onSend(data: data, tag: tag)
         guard let cls = targetClass() else { return }
         let origSel = NSSelectorFromString("mnp_original_send:tag:")
         typealias Fn = @convention(c) (AnyObject, Selector, AnyObject, Int) -> Void
         let fn = unsafeBitCast(class_getMethodImplementation(cls, origSel), to: Fn.self)
+
+        guard tag == 12345 else {
+            fn(socket, origSel, data, tag)
+            return
+        }
+        // 解析被 ACK 的 msgId → 判定是否为假 push。
+        let msgId = ackMsgIdResolver(data)
+        if msgId != 0, XCPushMockInterceptor.shared.contains(msgId: msgId) {
+            XCPushLongConnRecorder.shared.onMockedAckIntercepted(msgId: msgId)
+            SDKLog.info("push mock ACK intercepted (fake msgId=\(msgId)), dropped upstream", category: "mock")
+            return  // 丢弃不上行
+        }
         fn(socket, origSel, data, tag)
     }
 

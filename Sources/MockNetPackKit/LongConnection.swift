@@ -31,6 +31,8 @@ public enum LongConnectionEventType: String, Codable, Sendable {
     case packet = "packet"
     /// 已发送 ACK。
     case ack = "ack"
+    /// 模拟推送 ACK 被拦截（L7.2b：业务对假 push 的 ACK，丢弃不上行）。
+    case ackBlocked = "ack_blocked"
     /// 连接快照（携带 snapshot）。
     case snapshot = "snapshot"
 }
@@ -156,6 +158,11 @@ public struct LongConnectionRecordInput: Codable, Sendable {
     public var empty: Bool = false
     /// 是否已发送 ACK。
     public var ackSent: Bool = false
+    /// 是否被 push mock 规则替换（能力线 L7：拦截命中后标记；Web 显示
+    /// 「Mock 命中」）。未命中包保持 false，老 SDK 不携带（零副作用）。
+    public var mocked: Bool = false
+    /// 替换该包的 push mock 规则 ID（能力线 L7；服务端据此递增命中统计）。
+    public var mockRuleId: String? = nil
     /// 业务接收方标识（业务层分发细节；零侵入模式下留空，Web 如实标注）。
     public var receiver: String? = nil
     /// 业务接收方处理返回值（业务层分发细节；零侵入模式下留空）。

@@ -40,6 +40,10 @@ struct HeartbeatResponse: Codable {
     let serverConfig: ServerConfig
     let session: CaptureSession?
     let rulesVersion: Int?
+    /// push mock 规则版本（能力线 L7）；老服务端不下发 → nil，按 0 处理。
+    let pushRulesVersion: Int?
+    /// pending「模拟推送」指令（能力线 L7 模拟推送形态；无指令时省略 → nil）。
+    let pushCommands: [PushRuleCommand]?
 }
 
 /// 抓包会话（契约 CaptureSession； 仅用于状态判断）。
@@ -179,4 +183,59 @@ struct MockRule: Codable, Equatable {
 struct MockRuleList: Decodable {
     let version: Int
     let rules: [MockRule]
+}
+
+// ============================================================================
+// Push mock 规则模型（能力线 L7，与 server/openapi/mocknetpack.yaml 对齐）
+// ============================================================================
+
+/// push 匹配条件（契约 PushMockMatch）。服务端全字段 omitempty，SDK 侧全
+/// optional；实时拦截按「最多 1 条 JSONPath + 1 个子串」轻量子集执行（决策 D1）。
+struct PushMockMatch: Decodable, Equatable {
+    let jsonPath: String?
+    let jsonPathOp: String?
+    let jsonPathValue: String?
+    let keyword: String?
+}
+
+/// JSONPath 比较操作符取值（契约 PushMockMatch.jsonPathOp）。
+enum PushMatchOp {
+    static let equals = "equals"
+    static let contains = "contains"
+}
+
+/// 一条设备级 push mock 规则（契约 PushMockRule，SDK 线格式 sdkPushRuleView：
+/// owner/hitCount/source/note 等 Web-only 字段不下发）。SDK 只关心匹配与替换。
+struct PushMockRule: Decodable, Equatable {
+    let id: String
+    let channelId: String
+    let bizType: String
+    let match: PushMockMatch
+    /// 替换 payload 文本（JSON 字符串）；存在时使用。
+    let replacePayload: String?
+    /// 替换 payload base64（无法文本化的二进制）；与 replacePayload 二选一。
+    let replacePayloadBase64: String?
+    let enabled: Bool
+    /// 服务端计算的运行时生效态；SDK 只对 effective=true 的规则执行替换。
+    let effective: Bool
+}
+
+/// push 规则下发响应（契约 PushMockRuleList）。与 MockRuleList 同模式：
+/// version 为当前版本、rules 为 effective=true 的规则集（版本未变时为空数组）。
+struct PushMockRuleList: Decodable {
+    let version: Int
+    let rules: [PushMockRule]
+}
+
+/// 一条「模拟推送」pending 指令（契约 PushRuleCommandView，SDK 线）：
+/// 心跳响应携带；SDK 构造 Packet 注入后经 push-rule-commands/ack 回报消费。
+struct PushRuleCommand: Codable, Equatable {
+    let id: String
+    let ruleId: String
+    let channelId: String
+    let bizType: String
+    /// 替换 payload 文本（与 payloadBase64 二选一）。
+    let payload: String?
+    /// 替换 payload 原始字节（base64）。
+    let payloadBase64: String?
 }

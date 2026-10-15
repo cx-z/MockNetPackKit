@@ -123,6 +123,47 @@ struct ConnectionClient: Sendable {
         }
     }
 
+    /// POST 且期望 2xx 空响应体（L7.2b：push-rule-commands/ack 返回 204）。
+    func postNoContent<Body: Encodable>(_ path: String, body: Body?) async throws {
+        let base = baseURL.absoluteString.hasSuffix("/")
+            ? baseURL.absoluteString
+            : baseURL.absoluteString + "/"
+        guard let url = URL(string: base + path) else {
+            throw ConnectionClientError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = requestTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("1", forHTTPHeaderField: MockNetPackURLProtocol.skipHeader)
+
+        if let body = body {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            do {
+                request.httpBody = try encoder.encode(body)
+            } catch {
+                throw ConnectionClientError.encoding(error)
+            }
+        }
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await perform(request)
+        } catch {
+            throw error  // 网络层错误原样上抛（ConnectionController 据此退避重连）
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw ConnectionClientError.httpStatus(-1)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw ConnectionClientError.httpStatus(http.statusCode)
+        }
+        _ = data  // 204 空响应体；状态码已校验
+    }
+
     /// 发起 JSON GET 并解码响应（：规则增量拉取）。
     func get<Resp: Decodable>(_ path: String, as type: Resp.Type) async throws -> Resp {
         let base = baseURL.absoluteString.hasSuffix("/")
