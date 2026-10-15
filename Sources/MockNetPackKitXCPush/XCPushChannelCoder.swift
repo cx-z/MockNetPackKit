@@ -11,7 +11,7 @@ import Foundation
 #if canImport(MockNetPackKitXCPushObjC)
 import MockNetPackKitXCPushObjC
 #else
-import MockNetPackKitXCPush
+import MockNetPackKit
 #endif
 import MockNetPackKit
 

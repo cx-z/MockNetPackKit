@@ -35,7 +35,7 @@ import ObjectiveC
 #if canImport(MockNetPackKitXCPushObjC)
 import MockNetPackKitXCPushObjC
 #else
-import MockNetPackKitXCPush
+import MockNetPackKit
 #endif
 // 主 SDK 类型：LongConnAdapter 协议 / registry / 采集 / L7 PushMockInjecting。
 import MockNetPackKit
