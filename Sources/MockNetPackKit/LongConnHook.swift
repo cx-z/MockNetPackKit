@@ -68,6 +68,23 @@ public struct LongConnHookPoint: Sendable {
     }
 }
 
+/// receive hook 解出的一个长连接包：原始包体数据 + 可选头部摘要。
+///
+/// SDK 拿 `payloadData` 走通用解码链（gzip 嗅探 → 业务 customPayloadDecoder
+/// → JSON pretty → UTF-8 → 字节数）；`summary`（如 "type=7 msgId=123
+/// bizType=1"，框架特有字段拼装属业务）拼在最终 payload 文本头部。
+public struct LongConnPacketInfo: Sendable {
+    /// 原始包体（SDK 通用解码链的输入）。
+    public let payloadData: Data
+    /// 头部摘要（框架特有字段，由业务拼装；可空）。
+    public let summary: String?
+
+    public init(payloadData: Data, summary: String? = nil) {
+        self.payloadData = payloadData
+        self.summary = summary
+    }
+}
+
 /// 业务方声明（≤20 行）：一个长连接通道的完整接入描述。
 ///
 /// - `framework`：能力来源标识（L6.2 采集标注，Web 详情页展示）。
@@ -75,11 +92,13 @@ public struct LongConnHookPoint: Sendable {
 /// - `probeClassName`：框架探测类名（nil = 不探测，注册即启用）。
 /// - `connect` / `disconnect`：生命周期 hook 点（可选；调用即记录
 ///   connect/disconnect 事件）。
-/// - `receive`：消息接收 hook 点（可选；调用即采集，payload 经
-///   `extractPayload` 提取）。
-/// - `extractPayload`：回调参数数组 → 可读 payload（可选；不提供时
-///   记录不带 payload 的 receive 事件）。框架特有协议解码逻辑由业务方
-///   自己的工具提供（此处一行调用）。
+/// - `receive`：消息接收 hook 点（可选；调用即采集，包体经
+///   `extractPacket` 解出）。
+/// - `extractPacket`：回调参数数组 → `LongConnPacketInfo`（可选；返回 nil
+///   = 此包不采集，如心跳/协议控制包；不提供时 receive 只记事件不带包体）。
+/// - `customPayloadDecoder`：框架特有 payload 解码（可选；如嵌套 protobuf
+///   剥层）。对一包原始数据返回可读文本；返回 nil = 交 SDK 通用解码链
+///   （gzip 嗅探 → JSON pretty → UTF-8 → 字节数，见 MNPPayloadPreview）。
 /// - `injector`：Mock Push 注入闭包（可选；`PushRuleCommand` → 是否
 ///   投递成功）。框架特有假消息构造/投递由业务方自己的工具提供
 ///   （此处一行调用）。
@@ -90,7 +109,8 @@ public struct LongConnHookSpec: Sendable {
     public let connect: LongConnHookPoint?
     public let disconnect: LongConnHookPoint?
     public let receive: LongConnHookPoint?
-    public let extractPayload: (@Sendable ([Any]) -> String?)?
+    public let extractPacket: (@Sendable ([Any]) -> LongConnPacketInfo?)?
+    public let customPayloadDecoder: (@Sendable (Data) -> String?)?
     public let injector: (@Sendable (PushRuleCommand) -> Bool)?
 
     public init(
@@ -100,7 +120,8 @@ public struct LongConnHookSpec: Sendable {
         connect: LongConnHookPoint? = nil,
         disconnect: LongConnHookPoint? = nil,
         receive: LongConnHookPoint? = nil,
-        extractPayload: (@Sendable ([Any]) -> String?)? = nil,
+        extractPacket: (@Sendable ([Any]) -> LongConnPacketInfo?)? = nil,
+        customPayloadDecoder: (@Sendable (Data) -> String?)? = nil,
         injector: (@Sendable (PushRuleCommand) -> Bool)? = nil
     ) {
         self.framework = framework
@@ -109,7 +130,8 @@ public struct LongConnHookSpec: Sendable {
         self.connect = connect
         self.disconnect = disconnect
         self.receive = receive
-        self.extractPayload = extractPayload
+        self.extractPacket = extractPacket
+        self.customPayloadDecoder = customPayloadDecoder
         self.injector = injector
     }
 }
@@ -403,13 +425,36 @@ final class LongConnHookEngine: @unchecked Sendable {
         case "disconnect":
             record(spec: spec, event: .disconnect, direction: .out, payload: nil)
         case "receive":
-            // extractPayload 返回 nil = 业务方明确告知此包不采集（如心跳/
+            // extractPacket 返回 nil = 业务方明确告知此包不采集（如心跳/
             // 协议控制包，客户端用户不可见、属于噪音）；跳过记录。
-            guard let payload = spec.extractPayload?(args) else { break }
-            record(spec: spec, event: .packet, direction: .`in`, payload: payload)
+            guard let info = spec.extractPacket?(args) else { break }
+            record(spec: spec, event: .packet, direction: .`in`,
+                   payload: Self.decodePayload(info: info, spec: spec))
         default:
             break
         }
+    }
+
+    /// 包体解码链（框架无关通用）：gzip 嗅探解压 → 业务 customPayloadDecoder
+    /// （框架特有，如嵌套 protobuf 剥层）→ SDK 通用链（JSON pretty / UTF-8
+    /// / 字节数）。最终文本 = 业务 summary 头 + " payload=" + 解码结果。
+    private static func decodePayload(info: LongConnPacketInfo, spec: LongConnHookSpec) -> String {
+        // ① gzip 嗅探解压（与框架 zipType 字段无关）。
+        let inflated = MNPPayloadPreview.gzipInflatedIfNeeded(info.payloadData)
+        // ② 业务自定义解码器优先（框架特有）；返回 nil/空 → fallthrough。
+        if let custom = spec.customPayloadDecoder,
+           let body = custom(inflated), !body.isEmpty {
+            return join(summary: info.summary, body: body)
+        }
+        // ③ SDK 通用链：JSON pretty / UTF-8 原文，失败按字节数兜底。
+        let body = MNPPayloadPreview.text(of: inflated) ?? "\(inflated.count)B"
+        return join(summary: info.summary, body: body)
+    }
+
+    /// 拼接头摘要与包体文本（无摘要时只返回包体）。
+    private static func join(summary: String?, body: String) -> String {
+        guard let s = summary, !s.isEmpty else { return body }
+        return s + " payload=" + body
     }
 
     /// 构造并上报一条长连接记录（channelId 必填；packet 事件 payload

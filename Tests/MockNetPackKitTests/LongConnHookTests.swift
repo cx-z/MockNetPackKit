@@ -96,9 +96,9 @@ final class LongConnHookTests: XCTestCase {
             receive: LongConnHookPoint(className: delegateClass,
                                        selector: #selector(FakeDelegate.didReceive(_:)),
                                        template: .singleObject),
-            extractPayload: { args in
+            extractPacket: { args in
                 guard let msg = args.first as? NSString else { return nil }
-                return msg as String
+                return LongConnPacketInfo(payloadData: (msg as String).data(using: .utf8) ?? Data())
             }
         ))
 
@@ -141,9 +141,9 @@ final class LongConnHookTests: XCTestCase {
             receive: LongConnHookPoint(className: delegateClass,
                                        selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
                                        template: .twoObjects),
-            extractPayload: { args in
+            extractPacket: { args in
                 guard let data = args.dropFirst().first as? Data else { return nil }
-                return String(data: data, encoding: .utf8)
+                return LongConnPacketInfo(payloadData: data)
             }
         ))
 
@@ -172,9 +172,9 @@ final class LongConnHookTests: XCTestCase {
             receive: LongConnHookPoint(className: delegateClass,
                                        selector: #selector(FakeTagDelegate.socket(_:didReadTalk:withTag:)),
                                        template: .twoObjectsInt),
-            extractPayload: { args in
+            extractPacket: { args in
                 guard let talk = args.dropFirst().first as? NSString else { return nil }
-                return talk as String
+                return LongConnPacketInfo(payloadData: (talk as String).data(using: .utf8) ?? Data())
             }
         ))
 
@@ -201,7 +201,7 @@ final class LongConnHookTests: XCTestCase {
             receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
                                        selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
                                        template: .twoObjects),
-            extractPayload: { _ in "hello" }
+            extractPacket: { _ in LongConnPacketInfo(payloadData: Data("x".utf8)) }
         ))
 
         FakeSocketDelegate().socket(FakeSocket(), didReadData: Data("x".utf8))
@@ -211,7 +211,7 @@ final class LongConnHookTests: XCTestCase {
         XCTAssertEqual(packet.adapter, "fdsocket", "引擎采集应如实标注 framework")
     }
 
-    // MARK: - extractPayload 返回 nil = 业务方明确告知不采集（心跳/控制包噪音）
+    // MARK: - extractPacket 返回 nil = 业务方明确告知不采集（心跳/控制包噪音）
 
     func testReceiveSkippedWhenExtractorReturnsNil() {
         let collector = RecordCollector()
@@ -223,12 +223,69 @@ final class LongConnHookTests: XCTestCase {
             receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
                                        selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
                                        template: .twoObjects),
-            extractPayload: { _ in nil }
+            extractPacket: { _ in nil }
         ))
 
         FakeSocketDelegate().socket(FakeSocket(), didReadData: Data("x".utf8))
         XCTAssertEqual(collector.snapshot().filter { $0.eventType == .packet }.count, 0,
-                       "extractPayload 返回 nil 时不应产生 packet 记录")
+                       "extractPacket 返回 nil 时不应产生 packet 记录")
+    }
+
+    // MARK: - 解码链：customPayloadDecoder 优先，失败 fallthrough 通用链
+
+    func testCustomPayloadDecoderPreferred() {
+        let collector = RecordCollector()
+        LongConnHookEngine.shared.recordSink = { collector.append($0) }
+        install(LongConnHookSpec(
+            framework: "fdsocket",
+            channelId: "fake_tcp",
+            probeClassName: NSStringFromClass(FakeSocket.self),
+            receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
+                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
+                                       template: .twoObjects),
+            extractPacket: { _ in
+                LongConnPacketInfo(payloadData: Data("{}".utf8), summary: "head=1")
+            },
+            customPayloadDecoder: { _ in "custom-decoded" }
+        ))
+
+        FakeSocketDelegate().socket(FakeSocket(), didReadData: Data("{}".utf8))
+        let packet = collector.snapshot().first(where: { $0.eventType == .packet })
+        XCTAssertEqual(packet?.payloadText, "head=1 payload=custom-decoded",
+                       "customPayloadDecoder 非空时应优先于通用链")
+    }
+
+    func testCustomReturnsNilFallsThroughToGenericChain() {
+        let collector = RecordCollector()
+        LongConnHookEngine.shared.recordSink = { collector.append($0) }
+        // payloadData 为未排序 JSON：通用链应 pretty + key 排序。
+        let rawJSON = Data("{\"b\":1,\"a\":2}".utf8)
+        install(LongConnHookSpec(
+            framework: "fdsocket",
+            channelId: "fake_tcp",
+            probeClassName: NSStringFromClass(FakeSocket.self),
+            receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
+                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
+                                       template: .twoObjects),
+            extractPacket: { _ in LongConnPacketInfo(payloadData: rawJSON) },
+            customPayloadDecoder: { _ in nil }
+        ))
+
+        FakeSocketDelegate().socket(FakeSocket(), didReadData: rawJSON)
+        let packet = collector.snapshot().first(where: { $0.eventType == .packet })
+        XCTAssertEqual(packet?.payloadText, "{\n  \"a\" : 2,\n  \"b\" : 1\n}",
+                       "custom 返回 nil 时应走 SDK 通用链（JSON pretty + key 排序）")
+    }
+
+    func testGzipPayloadAutoInflated() {
+        // gzip 压缩的 JSON：通用链应自动嗅探解压后 pretty。
+        guard let compressed = Data("{\"k\":1}".utf8).gzipCompressed() else {
+            XCTFail("测试前置：gzip 压缩失败"); return
+        }
+        let text = MNPPayloadPreview.text(of: compressed)
+        XCTAssertEqual(text, "{\n  \"k\" : 1\n}", "gzip 数据应自动解压后 JSON pretty")
+        // 非 gzip 数据原样返回（嗅探不误伤）。
+        XCTAssertEqual(MNPPayloadPreview.text(of: Data("hi".utf8)), "hi")
     }
 
     // MARK: - 注入态：注入闭包内触发的记录标 mocked + mockRuleId
@@ -243,7 +300,7 @@ final class LongConnHookTests: XCTestCase {
             receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
                                        selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
                                        template: .twoObjects),
-            extractPayload: { _ in "fake" }
+            extractPacket: { _ in LongConnPacketInfo(payloadData: Data("fake".utf8)) }
         ))
 
         let delegate = FakeSocketDelegate()
