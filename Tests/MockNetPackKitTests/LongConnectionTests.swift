@@ -87,7 +87,7 @@ final class LongConnectionTests: XCTestCase {
         return records
     }
 
-    private func makeRecord(channel: String = "xcpush_tcp",
+    private func makeRecord(channel: String = "srwebsocket",
                             event: LongConnectionEventType = .packet,
                             payloadText: String? = "hello",
                             msgId: String? = nil) -> LongConnectionRecordInput {
@@ -106,9 +106,9 @@ final class LongConnectionTests: XCTestCase {
 
         // ① 纯 API 注入（未带 adapter）→ collector 统一标 unknown-inject。
         LongConnectionCollector.shared.record(makeRecord(msgId: "m-adapter-1"))
-        // ② 适配器采集（带 adapter="xcpush"）→ 透传不覆盖。
+        // ② 适配器采集（带 adapter="srwebsocket"）→ 透传不覆盖。
         var adapterRecord = makeRecord(msgId: "m-adapter-2")
-        adapterRecord.adapter = "xcpush"
+        adapterRecord.adapter = "srwebsocket"
         LongConnectionCollector.shared.record(adapterRecord)
 
         controller.flush()
@@ -121,7 +121,7 @@ final class LongConnectionTests: XCTestCase {
         })
         XCTAssertEqual(byMsg["m-adapter-1"]?["adapter"] as? String, "unknown-inject",
                        "API 注入未标来源应如实标注 unknown-inject")
-        XCTAssertEqual(byMsg["m-adapter-2"]?["adapter"] as? String, "xcpush",
+        XCTAssertEqual(byMsg["m-adapter-2"]?["adapter"] as? String, "srwebsocket",
                        "已带 adapter 标识的记录应原样透传")
     }
 

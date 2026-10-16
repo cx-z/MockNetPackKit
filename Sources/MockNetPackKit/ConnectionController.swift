@@ -119,11 +119,11 @@ final class ConnectionController: @unchecked Sendable {
             did: self.did ?? "",
             logHandler: self.logHandler)
 
-        // L5.1/L6.1a 重做：长连接适配器 registry（纯注册制，决策 D-L6.4）。
-        // NSClassFromString 探测业务方已注册适配器声明的框架类名，命中即自动
-        // 启用；SDK 不内置任何框架适配器。未注册/未探测到 → 静默跳过
+        // L6.5a（D-L6.5 方案 A）：LongConnHook 通用声明式长连接接入层。
+        // 探测业务方声明的框架类名，命中即安装 hook（采集 + 注入挂载）；
+        // SDK 不内置、不依赖任何具体框架。未注册/未探测到 → 静默跳过
         // （不崩溃、不报错），不影响其他能力（L6.1b 回退日志可观测）。
-        LongConnAdapterRegistry.shared.installAllIfNeeded()
+        LongConnHookEngine.shared.installAllIfNeeded()
     }
 
     /// 无服务器启动：仅解析 did 并置 `.unconfigured`，不发起网络、不启动采集；
@@ -164,7 +164,7 @@ final class ConnectionController: @unchecked Sendable {
 
         // L5.1/L6.1a 重做：长连接适配器 registry（纯注册制）。无服务器启动
         // 同样安装——保证扫码连接建立前创建的框架 socket 即被代理。
-        LongConnAdapterRegistry.shared.installAllIfNeeded()
+        LongConnHookEngine.shared.installAllIfNeeded()
         setConnectionState(.unconfigured)
     }
 

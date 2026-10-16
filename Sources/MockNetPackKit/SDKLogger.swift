@@ -2,8 +2,8 @@ import Foundation
 import OSLog
 
 /// SDK 内部日志入口（iOS 13 兼容）。
-/// L6.1a 重做：适配器模块（MockNetPackKitXCPush）沿用主 SDK 统一日志
-/// 出口（category 一致可观测）→ 公开。
+/// L6.1a 重做：长连接接入模块沿用主 SDK 统一日志出口（category 一致
+/// 可观测）→ 公开。
 ///
 /// `Logger` 与 OSLog 插值（privacy）仅 iOS 14+ 可用，而 SDK 最低部署
 /// 目标为 iOS 13：iOS 14+ 走统一日志（隐私标注 public），iOS 13 及更早

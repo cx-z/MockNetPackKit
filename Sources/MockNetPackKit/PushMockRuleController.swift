@@ -84,11 +84,11 @@ public final class PushMockRuleController: @unchecked Sendable {
 
     // MARK: - L7.2b 模拟推送：指令注入 + ack 回报
 
-    /// 心跳成功后调用：对心跳响应携带的 pending 指令逐条构造假 Packet 并注入
-    /// 到当前活跃长连接；注入成功 → ack 回报服务端（指令消费）；注入失败
-    /// （无活跃连接 / Packet 构造失败）→ 不 ack，指令保留待下次心跳重试。
-    /// 注入/回报失败均不阻塞心跳周期（fail-open）。注入器未挂载（无适配器
-    /// 安装）→ 指令跳过保留，待下次心跳（L6.1a 重做注册制语义）。
+    /// 心跳成功后调用：对心跳响应携带的 pending 指令逐条调用注入器（一步
+    /// 构造+投递假消息）；注入成功 → ack 回报服务端（指令消费）；注入失败
+    /// （无活跃连接 / 构造失败）→ 不 ack，指令保留待下次心跳重试。
+    /// 注入/回报失败均不阻塞心跳周期（fail-open）。注入器未挂载（未声明
+    /// 注入闭包 / 未安装 hook）→ 指令跳过保留，待下次心跳（L6.5a 声明制语义）。
     func injectPendingCommands(client: ConnectionClient, app: String, did: String,
                                commands: [PushRuleCommand]) async {
         guard !commands.isEmpty else { return }
@@ -98,13 +98,9 @@ public final class PushMockRuleController: @unchecked Sendable {
         }
         var acked: [String] = []
         for command in commands {
-            guard let packet = injector.makePacket(command: command) else {
-                SDKLog.error("push mock makePacket failed command=\(command.id), retry next heartbeat", category: "mock")
-                continue
-            }
-            guard injector.inject(packet: packet) else {
-                // 无活跃长连接：保留指令，下次心跳重试。
-                SDKLog.error("push mock inject skipped command=\(command.id) (no active socket), retry next heartbeat", category: "mock")
+            guard injector.inject(command: command) else {
+                // 无活跃连接 / 构造失败：保留指令，下次心跳重试。
+                SDKLog.error("push mock inject skipped command=\(command.id), retry next heartbeat", category: "mock")
                 continue
             }
             acked.append(command.id)

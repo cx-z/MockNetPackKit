@@ -210,7 +210,7 @@ final class LongConnHookTests: XCTestCase {
         }
         let command = PushRuleCommand(id: "c1", ruleId: "r1", channelId: "fake_tcp",
                                       bizType: "chat", payload: "hello", payloadBase64: nil)
-        let ok = injector.inject(packet: command as AnyObject)
+        let ok = injector.inject(command: command)
         XCTAssertTrue(ok, "业务注入闭包返回 true 应视为注入成功")
         box.lock.lock()
         let injected = box.value

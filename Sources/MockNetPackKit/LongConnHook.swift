@@ -4,10 +4,10 @@
 //
 //  L6.5a（2026-10-16 决策 D-L6.5 方案 A）：通用声明式长连接接入层。
 //
-//  背景：SDK 将提交 GitHub 公开，主 SDK 不允许集成任何业务方特有/具体框架
-//  信息（XCPush 为公司内部框架，SRWebSocket 等开源框架亦不内置）。本文件是
-//  公开仓库唯一的「长连接接入面」：业务方以 ≤20 行**声明**（非开发）接入，
-//  由 SDK 执行探测、hook、采集与 Mock Push 注入调度。
+//  背景：SDK 将提交 GitHub 公开，主 SDK 不允许集成任何具体框架信息
+//  （公司内部推送框架、第三方开源框架均不内置）。本文件是公开仓库唯一的
+//  「长连接接入面」：业务方以 ≤20 行**声明**（非开发）接入，由 SDK 执行
+//  探测、hook、采集与 Mock Push 注入调度。
 //
 //  设计要点：
 //  - 声明即接入：业务方声明 framework/channelId/hook 点/payload 提取闭包/
@@ -155,8 +155,7 @@ final class LongConnHookEngine: @unchecked Sendable {
 
     /// 活跃注入器（#if DEBUG：安装成功后挂 PushMockRuleController）。
     /// LongConnHook 注入器经 PushMockInjecting 协议挂载（主 SDK 不依赖
-    /// 具体框架实现；协议两步形态 makePacket→inject，LongConnHook 以
-    /// command 为包对象占位、业务闭包一步完成构造+投递）。
+    /// 具体框架实现；协议为一步注入形态，业务闭包完成构造+投递）。
     private var injectorsValue: [String: PushMockInjecting] = [:]  // channelId → injector
 
     /// 最近注入记录（injector 的 recentInjections 数据源；测试/日志）。
@@ -425,7 +424,7 @@ private final class SpecBox: @unchecked Sendable {
 }
 
 /// LongConnHook 注入器（适配 PushMockInjecting 协议；业务闭包一步完成
-/// 构造+投递——协议两步形态下 makePacket 以 command 占位返回）。
+/// 构造+投递——L6.5b 起协议即一步注入形态）。
 final class LongConnHookInjector: PushMockInjecting {
     private let channelId: String
     private let inject: @Sendable (PushRuleCommand) -> Bool
@@ -435,14 +434,7 @@ final class LongConnHookInjector: PushMockInjecting {
         self.inject = inject
     }
 
-    func makePacket(command: PushRuleCommand) -> AnyObject? {
-        // LongConnHook 形态：业务闭包一步完成「构造 + 投递」，包对象
-        // 概念由业务方工具内部持有；此处以 command 占位传递。
-        command as AnyObject
-    }
-
-    func inject(packet: AnyObject) -> Bool {
-        guard let command = packet as? PushRuleCommand else { return false }
+    func inject(command: PushRuleCommand) -> Bool {
         let ok = inject(command)
         if ok {
             LongConnHookEngine.shared.noteInjection(ruleId: command.ruleId,

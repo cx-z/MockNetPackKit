@@ -163,7 +163,7 @@ public struct LongConnectionRecordInput: Codable, Sendable {
     public var mocked: Bool = false
     /// 替换该包的 push mock 规则 ID（能力线 L7；服务端据此递增命中统计）。
     public var mockRuleId: String? = nil
-    /// 采集方式标识（L6.2）：哪条适配器采的（如 "xcpush"）；业务侧 API 注入
+    /// 采集方式标识（L6.2）：能力来源（如 "srwebsocket"）；业务侧 API 注入
     /// 且未标来源的记录由 collector 统一标 "unknown-inject"；老 SDK 不携带
     /// （Web 缺省展示，零副作用）。
     public var adapter: String? = nil
