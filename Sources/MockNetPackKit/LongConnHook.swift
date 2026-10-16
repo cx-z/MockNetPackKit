@@ -168,7 +168,30 @@ final class LongConnHookEngine: @unchecked Sendable {
     }
     private var recentInjectionsValue: [InjectionRecord] = []
 
+    /// 注入态线程键：push mock 注入闭包执行期间标记「当前调用为模拟推送」，
+    /// hook 采集据此把记录标 mocked/mockRuleId（Web 展示 fake 徽标）。用线程
+    /// 本地存储，避免真实 socket 回调线程与注入调用线程互相误标。
+    private static let injectionThreadKey = "com.mocknetpack.longconn.injecting"
+
     private init() {}
+
+    // MARK: - 注入态（push mock 注入期间采集标记）
+
+    /// 进入注入态（线程本地）：后续本线程 hook 采集的 packet 记录标 mocked。
+    /// 由 PushMockRuleController 在调用注入器闭包前调用。
+    func beginInjection(_ ruleId: String) {
+        Thread.current.threadDictionary[Self.injectionThreadKey] = ruleId
+    }
+
+    /// 退出注入态（线程本地）；须与 beginInjection 成对调用。
+    func endInjection() {
+        Thread.current.threadDictionary.removeObject(forKey: Self.injectionThreadKey)
+    }
+
+    /// 当前线程注入中的 push mock 规则 ID（非注入调用返回 nil）。
+    func currentInjectionRuleId() -> String? {
+        Thread.current.threadDictionary[Self.injectionThreadKey] as? String
+    }
 
     /// 注册声明（幂等：同 channelId 忽略重复）。
     func register(_ spec: LongConnHookSpec) {
@@ -396,6 +419,14 @@ final class LongConnHookEngine: @unchecked Sendable {
                                                ts: Date())
         record.direction = direction
         record.payloadText = payload
+        // L6.2：引擎采集如实标注能力来源（声明 framework），Web 展示采集方式。
+        record.adapter = spec.framework
+        // 注入态：push mock 注入闭包内触发（本线程）的 packet 记录标 mocked
+        // + 规则 ID（Web fake 徽标；服务端递增命中统计）。
+        if event == .packet, let ruleId = currentInjectionRuleId() {
+            record.mocked = true
+            record.mockRuleId = ruleId
+        }
         recordSink(record)
     }
 

@@ -188,6 +188,60 @@ final class LongConnHookTests: XCTestCase {
         XCTAssertEqual(packet.payloadText, "hello")
     }
 
+    // MARK: - L6.2 采集方式如实标注：引擎记录恒带声明 framework
+
+    func testCollectorLabelsFrameworkAdapter() {
+        let collector = RecordCollector()
+        LongConnHookEngine.shared.recordSink = { collector.append($0) }
+
+        install(LongConnHookSpec(
+            framework: "fdsocket",
+            channelId: "fake_tcp",
+            probeClassName: NSStringFromClass(FakeSocket.self),
+            receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
+                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
+                                       template: .twoObjects),
+            extractPayload: { _ in "hello" }
+        ))
+
+        FakeSocketDelegate().socket(FakeSocket(), didReadData: Data("x".utf8))
+        guard let packet = collector.snapshot().first(where: { $0.eventType == .packet }) else {
+            XCTFail("缺 packet 记录"); return
+        }
+        XCTAssertEqual(packet.adapter, "fdsocket", "引擎采集应如实标注 framework")
+    }
+
+    // MARK: - 注入态：注入闭包内触发的记录标 mocked + mockRuleId
+
+    func testInjectorMarksMockedRecord() {
+        let collector = RecordCollector()
+        LongConnHookEngine.shared.recordSink = { collector.append($0) }
+        install(LongConnHookSpec(
+            framework: "fdsocket",
+            channelId: "fake_tcp",
+            probeClassName: NSStringFromClass(FakeSocket.self),
+            receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
+                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
+                                       template: .twoObjects),
+            extractPayload: { _ in "fake" }
+        ))
+
+        let delegate = FakeSocketDelegate()
+        // 注入态内调用 → mocked + mockRuleId。
+        LongConnHookEngine.shared.beginInjection("rule-42")
+        delegate.socket(FakeSocket(), didReadData: Data("fake".utf8))
+        LongConnHookEngine.shared.endInjection()
+        // 注入态外调用（真实回调语义）→ 不标 mocked。
+        delegate.socket(FakeSocket(), didReadData: Data("real".utf8))
+
+        let packets = collector.snapshot().filter { $0.eventType == .packet }
+        XCTAssertEqual(packets.count, 2)
+        XCTAssertEqual(packets[0].mocked, true)
+        XCTAssertEqual(packets[0].mockRuleId, "rule-42")
+        XCTAssertEqual(packets[1].mocked, false)
+        XCTAssertNil(packets[1].mockRuleId)
+    }
+
     // MARK: - 探测未命中：优雅回退
 
     func testProbeMissGracefulFallback() {

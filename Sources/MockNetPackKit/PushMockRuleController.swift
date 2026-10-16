@@ -98,7 +98,12 @@ public final class PushMockRuleController: @unchecked Sendable {
         }
         var acked: [String] = []
         for command in commands {
-            guard injector.inject(command: command) else {
+            // 注入态（线程本地）：注入闭包内（同步）触发的 hook 采集将
+            // packet 记录标 mocked/mockRuleId（Web fake 徽标）。
+            LongConnHookEngine.shared.beginInjection(command.ruleId)
+            let injected = injector.inject(command: command)
+            LongConnHookEngine.shared.endInjection()
+            guard injected else {
                 // 无活跃连接 / 构造失败：保留指令，下次心跳重试。
                 SDKLog.error("push mock inject skipped command=\(command.id), retry next heartbeat", category: "mock")
                 continue
