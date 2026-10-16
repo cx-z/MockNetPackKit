@@ -77,8 +77,10 @@ public struct LongConnPacketInfo: Sendable {
 ///   connect/disconnect 事件）。
 /// - `receive`：消息接收 hook 点（可选；调用即采集，包体经
 ///   `extractPacket` 解出）。
-/// - `extractPacket`：回调参数数组 → `LongConnPacketInfo`（可选；返回 nil
-///   = 此包不采集，如心跳/协议控制包；不提供时 receive 只记事件不带包体）。
+/// - `extractPacket`：SDK 从 receive hook 参数数组中自动挑出"包对象"
+///   （delegate 惯例 `(socket, packet, ...)`，取最后一个非数值参数），
+///   业务闭包把它解为 `LongConnPacketInfo`（可选；返回 nil = 此包不采集，
+///   如心跳/协议控制包）；不提供时 receive 只记事件不带包体。
 /// - `customPayloadDecoder`：框架特有 payload 解码（可选；如嵌套 protobuf
 ///   剥层）。对一包原始数据返回可读文本；返回 nil = 交 SDK 通用解码链
 ///   （gzip 嗅探 → JSON pretty → UTF-8 → 字节数，见 MNPPayloadPreview）。
@@ -92,7 +94,7 @@ public struct LongConnHookSpec: Sendable {
     public let connect: LongConnHookPoint?
     public let disconnect: LongConnHookPoint?
     public let receive: LongConnHookPoint?
-    public let extractPacket: (@Sendable ([Any]) -> LongConnPacketInfo?)?
+    public let extractPacket: (@Sendable (Any) -> LongConnPacketInfo?)?
     public let customPayloadDecoder: (@Sendable (Data) -> String?)?
     public let injector: (@Sendable (PushRuleCommand, LongConnHookInjectContext) -> Bool)?
 
@@ -103,7 +105,7 @@ public struct LongConnHookSpec: Sendable {
         connect: LongConnHookPoint? = nil,
         disconnect: LongConnHookPoint? = nil,
         receive: LongConnHookPoint? = nil,
-        extractPacket: (@Sendable ([Any]) -> LongConnPacketInfo?)? = nil,
+        extractPacket: (@Sendable (Any) -> LongConnPacketInfo?)? = nil,
         customPayloadDecoder: (@Sendable (Data) -> String?)? = nil,
         injector: (@Sendable (PushRuleCommand, LongConnHookInjectContext) -> Bool)? = nil
     ) {
@@ -455,14 +457,31 @@ final class LongConnHookEngine: @unchecked Sendable {
         case "disconnect":
             record(spec: spec, event: .disconnect, direction: .out, payload: nil)
         case "receive":
+            // SDK 自动挑包对象（delegate 惯例 (socket, packet, ...)：最后
+            // 一个非数值参数）；挑不到 = 全数值参数，无包可采。
             // extractPacket 返回 nil = 业务方明确告知此包不采集（如心跳/
             // 协议控制包，客户端用户不可见、属于噪音）；跳过记录。
-            guard let info = spec.extractPacket?(args) else { break }
+            guard let packetArg = Self.pickPacketArgument(from: args),
+                  let info = spec.extractPacket?(packetArg) else { break }
             record(spec: spec, event: .packet, direction: .`in`,
                    payload: Self.decodePayload(info: info, spec: spec))
         default:
             break
         }
+    }
+
+    /// 从 receive hook 参数数组中挑出"包对象"。delegate 回调惯例为
+    /// `(socket, packet, ...)`（末尾常带 tag/flag 等数值参数），规则：
+    /// 倒序遍历，最后一个非 NSNumber（数值）且非 NSNull（nil 占位）的参数
+    /// 即包对象。挑错时业务闭包强转失败返回 nil，安全降级不采集。
+    /// - Parameter args: hook block 打包的方法参数数组（self 之后）。
+    /// - Returns: 包对象；全部为数值/空占位时返回 nil。
+    private static func pickPacketArgument(from args: [Any]) -> Any? {
+        for arg in args.reversed() {
+            if arg is NSNumber || arg is NSNull { continue }
+            return arg
+        }
+        return nil
     }
 
     /// 包体解码链（框架无关通用）：gzip 嗅探解压 → 业务 customPayloadDecoder

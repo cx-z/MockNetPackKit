@@ -93,8 +93,8 @@ final class LongConnHookTests: XCTestCase {
                                        selector: #selector(FakeSocket.connect)),
             receive: LongConnHookPoint(klass: delegateClass,
                                        selector: #selector(FakeDelegate.didReceive(_:))),
-            extractPacket: { args in
-                guard let msg = args.first as? NSString else { return nil }
+            extractPacket: { raw in
+                guard let msg = raw as? NSString else { return nil }
                 return LongConnPacketInfo(payloadData: (msg as String).data(using: .utf8) ?? Data())
             }
         ))
@@ -136,8 +136,10 @@ final class LongConnHookTests: XCTestCase {
             probeClass: socketClass,
             receive: LongConnHookPoint(klass: delegateClass,
                                        selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
-            extractPacket: { args in
-                guard let data = args.dropFirst().first as? Data else { return nil }
+            extractPacket: { raw in
+                // SDK 自动挑包对象（delegate 惯例 (socket, data) → data），
+                // 业务闭包直接拿到包、无需操作参数数组。
+                guard let data = raw as? Data else { return nil }
                 return LongConnPacketInfo(payloadData: data)
             }
         ))
@@ -165,8 +167,9 @@ final class LongConnHookTests: XCTestCase {
             probeClass: socketClass,
             receive: LongConnHookPoint(klass: delegateClass,
                                        selector: #selector(FakeTagDelegate.socket(_:didReadTalk:withTag:))),
-            extractPacket: { args in
-                guard let talk = args.dropFirst().first as? NSString else { return nil }
+            extractPacket: { raw in
+                // SDK 自动跳过末尾数值 tag，挑出中间的 talk 对象。
+                guard let talk = raw as? NSString else { return nil }
                 return LongConnPacketInfo(payloadData: (talk as String).data(using: .utf8) ?? Data())
             }
         ))
