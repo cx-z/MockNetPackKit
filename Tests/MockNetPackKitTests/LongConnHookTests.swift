@@ -184,15 +184,14 @@ final class LongConnHookTests: XCTestCase {
         XCTAssertEqual(packet.payloadText, "hello")
     }
 
-    // MARK: - L6.2 采集方式如实标注：引擎记录恒带声明 framework
+    // MARK: - L6.2 采集方式如实标注：引擎记录带 channelId 作为 adapter
 
-    func testCollectorLabelsFrameworkAdapter() {
+    func testCollectorLabelsChannelAsAdapter() {
         let collector = RecordCollector()
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
 
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            framework: "fdsocket",
             probeClass: FakeSocket.self,
             receive: LongConnHookPoint(klass: FakeSocketDelegate.self,
                                        selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
@@ -203,7 +202,7 @@ final class LongConnHookTests: XCTestCase {
         guard let packet = collector.snapshot().first(where: { $0.eventType == .packet }) else {
             XCTFail("缺 packet 记录"); return
         }
-        XCTAssertEqual(packet.adapter, "fdsocket", "引擎采集应如实标注 framework")
+        XCTAssertEqual(packet.adapter, "fake_tcp", "引擎采集应如实标注 channelId 为 adapter")
     }
 
     // MARK: - extractPacket 返回 nil = 业务方明确告知不采集（心跳/控制包噪音）
@@ -327,12 +326,10 @@ final class LongConnHookTests: XCTestCase {
     func testDuplicateRegistrationIgnored() {
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            framework: "fake_push",
             probeClass: FakeSocket.self
         ))
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            framework: "fake_push_dup",
             probeClass: FakeSocket.self
         ))
 
@@ -351,7 +348,6 @@ final class LongConnHookTests: XCTestCase {
         let box = PayloadBox()
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            framework: "fake_push",
             probeClass: FakeSocket.self,
             injector: { command, ctx in
                 box.lock.lock()

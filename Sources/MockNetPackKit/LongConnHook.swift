@@ -10,10 +10,9 @@
 //  探测、hook、采集与 Mock Push 注入调度。
 //
 //  设计要点：
-//  - 声明即接入：业务方声明 framework/channelId/hook 点/payload 提取闭包/
-//    注入闭包；SDK 负责 NSClassFromString 探测 + 方法 hook + 事件记录 +
-//    Push Mock 规则调度——不出现任何具体框架类名（探测类名由业务方声明，
-//    属接入方配置，非 SDK 内置）。
+//  - 声明即接入：业务方声明 channelId/hook 点/payload 提取闭包/注入闭包；
+//    SDK 负责探测 + 方法 hook + 事件记录 + Push Mock 规则调度——不出现任何
+//    具体框架类名（探测类对象由业务方声明，属接入方配置，非 SDK 内置）。
 //  - 签名模板引擎：长连接回调签名各异（无参 / 单对象 / 双对象 /
 //    (对象, 对象, UInt16)），引擎按模板 swizzle，先采集再调原实现
 //    （业务行为不变）。覆盖主流框架回调形态（didReceiveMessage: /
@@ -69,9 +68,8 @@ public struct LongConnPacketInfo: Sendable {
 
 /// 业务方声明（≤20 行）：一个长连接通道的完整接入描述。
 ///
-/// - `channelId`：记录维度 + Mock 规则下发路由（必填；多通道并存靠它区分）。
-/// - `framework`：能力来源标识（L6.2 采集标注，Web 详情页展示）；可选，
-///   缺省用 channelId。
+/// - `channelId`：记录维度 + Mock 规则下发路由 + 采集方式标注
+///   （L6.2 adapter 标识即用它，Web 详情页展示）；必填，多通道并存靠它区分。
 /// - `probeClass`：框架探测类对象（可选；nil = 注册即启用）。
 /// - `connect` / `disconnect`：生命周期 hook 点（可选；调用即记录
 ///   connect/disconnect 事件）。
@@ -89,7 +87,6 @@ public struct LongConnPacketInfo: Sendable {
 ///   （此处一行调用）；假包唯一 msgId 由 `context.nextFakeMsgId()` 生成。
 public struct LongConnHookSpec: Sendable {
     public let channelId: String
-    public let framework: String
     public let probeClass: AnyClass?
     public let connect: LongConnHookPoint?
     public let disconnect: LongConnHookPoint?
@@ -100,7 +97,6 @@ public struct LongConnHookSpec: Sendable {
 
     public init(
         channelId: String,
-        framework: String? = nil,
         probeClass: AnyClass? = nil,
         connect: LongConnHookPoint? = nil,
         disconnect: LongConnHookPoint? = nil,
@@ -110,7 +106,6 @@ public struct LongConnHookSpec: Sendable {
         injector: (@Sendable (PushRuleCommand, LongConnHookInjectContext) -> Bool)? = nil
     ) {
         self.channelId = channelId
-        self.framework = framework ?? channelId
         self.probeClass = probeClass
         self.connect = connect
         self.disconnect = disconnect
@@ -321,9 +316,9 @@ final class LongConnHookEngine: @unchecked Sendable {
             swizzle(point: point, spec: spec, kind: kind)
         }
 
-        // 注册通道（通道元信息记录框架标识；Web 按 channelId 聚合）。
+        // 注册通道（Web 按 channelId 聚合；adapter 标识即 channelId）。
         MockNetPackKit.registerLongConnectionChannel(spec.channelId,
-                                                     metadata: ["framework": spec.framework])
+                                                     metadata: [:])
 
         // 注入器挂载（Debug：Mock Push 规则触达时投递；主 SDK 只认协议）。
         if let injector = spec.injector {
@@ -337,7 +332,7 @@ final class LongConnHookEngine: @unchecked Sendable {
             #endif
         }
 
-        SDKLog.info("longconn hook installed (framework=\(spec.framework), channel=\(spec.channelId))",
+        SDKLog.info("longconn hook installed (channel=\(spec.channelId))",
                     category: "longconn")
         return true
     }
@@ -515,8 +510,8 @@ final class LongConnHookEngine: @unchecked Sendable {
                                                ts: Date())
         record.direction = direction
         record.payloadText = payload
-        // L6.2：引擎采集如实标注能力来源（声明 framework），Web 展示采集方式。
-        record.adapter = spec.framework
+        // L6.2：采集记录带通道标识（channelId），Web 详情页展示采集来源。
+        record.adapter = spec.channelId
         // 注入态：push mock 注入闭包内触发（本线程）的 packet 记录标 mocked
         // + 规则 ID（Web fake 徽标；服务端递增命中统计）。
         if event == .packet, let ruleId = currentInjectionRuleId() {
