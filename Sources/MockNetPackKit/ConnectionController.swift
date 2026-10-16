@@ -120,9 +120,8 @@ final class ConnectionController: @unchecked Sendable {
             logHandler: self.logHandler)
 
         // L6.5a（D-L6.5 方案 A）：LongConnHook 通用声明式长连接接入层。
-        // 探测业务方声明的框架类名，命中即安装 hook（采集 + 注入挂载）；
-        // SDK 不内置、不依赖任何具体框架。未注册/未探测到 → 静默跳过
-        // （不崩溃、不报错），不影响其他能力（L6.1b 回退日志可观测）。
+        // 安装业务方已注册的 hook 声明（采集 + 注入挂载）；SDK 不内置、
+        // 不依赖任何具体框架。未注册任何声明 → 无动作（不崩溃、不报错）。
         LongConnHookEngine.shared.installAllIfNeeded()
     }
 

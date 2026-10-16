@@ -21,10 +21,10 @@
 //    injector 闭包由业务方投递假消息（Mock Push）——框架特有协议逻辑
 //    留在业务方自己的工具中（一行调用），公开仓库零框架痕迹。
 //  - 安装点：MockNetPackKit.start 路径（ConnectionController.start /
-//    startUnconfigured 调 LongConnAdapterRegistry.installAllIfNeeded），
-//    幂等可重复调用；未注册任何 hook → 长连接能力静默未启用
-//    （L6.1b 优雅回退：不崩溃、不报错，回退日志可观测）。
-//  - 多通道共存（决策 D-L6.3）：多次 register 各自探测、各自采集，由
+//    startUnconfigured 调 LongConnHookEngine.installAllIfNeeded），
+//    幂等可重复调用；未注册任何声明 → 长连接能力静默未启用
+//    （不崩溃、不报错）。
+//  - 多通道共存（决策 D-L6.3）：多次 register 各自启用、各自采集，由
 //    channelId 区分。
 //
 
@@ -70,7 +70,6 @@ public struct LongConnPacketInfo: Sendable {
 ///
 /// - `channelId`：记录维度 + Mock 规则下发路由 + 采集方式标注
 ///   （L6.2 adapter 标识即用它，Web 详情页展示）；必填，多通道并存靠它区分。
-/// - `probeClass`：框架探测类对象（可选；nil = 注册即启用）。
 /// - `connect` / `disconnect`：生命周期 hook 点（可选；调用即记录
 ///   connect/disconnect 事件）。
 /// - `receive`：消息接收 hook 点（可选；调用即采集，包体经
@@ -78,7 +77,7 @@ public struct LongConnPacketInfo: Sendable {
 /// - `extractPacket`：SDK 从 receive hook 参数数组中自动挑出"包对象"
 ///   （delegate 惯例 `(socket, packet, ...)`，取最后一个非数值参数），
 ///   业务闭包把它解为 `LongConnPacketInfo`（可选；返回 nil = 此包不采集，
-///   如心跳/协议控制包）；不提供时 receive 只记事件不带包体。
+///   如心跳/协议控制包）；不提供时 receive 调用不产生任何记录。
 /// - `customPayloadDecoder`：框架特有 payload 解码（可选；如嵌套 protobuf
 ///   剥层）。对一包原始数据返回可读文本；返回 nil = 交 SDK 通用解码链
 ///   （gzip 嗅探 → JSON pretty → UTF-8 → 字节数，见 MNPPayloadPreview）。
@@ -87,7 +86,6 @@ public struct LongConnPacketInfo: Sendable {
 ///   （此处一行调用）；假包唯一 msgId 由 `context.nextFakeMsgId()` 生成。
 public struct LongConnHookSpec: Sendable {
     public let channelId: String
-    public let probeClass: AnyClass?
     public let connect: LongConnHookPoint?
     public let disconnect: LongConnHookPoint?
     public let receive: LongConnHookPoint?
@@ -97,7 +95,6 @@ public struct LongConnHookSpec: Sendable {
 
     public init(
         channelId: String,
-        probeClass: AnyClass? = nil,
         connect: LongConnHookPoint? = nil,
         disconnect: LongConnHookPoint? = nil,
         receive: LongConnHookPoint? = nil,
@@ -106,7 +103,6 @@ public struct LongConnHookSpec: Sendable {
         injector: (@Sendable (PushRuleCommand, LongConnHookInjectContext) -> Bool)? = nil
     ) {
         self.channelId = channelId
-        self.probeClass = probeClass
         self.connect = connect
         self.disconnect = disconnect
         self.receive = receive
@@ -225,8 +221,9 @@ final class LongConnHookEngine: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// 探测并安装所有「已注册且未启用」的 hook（安装点 = start 路径）。
-    /// 未命中探测类 → 静默跳过（L6.1b 优雅回退，汇总日志可观测）。
+    /// 安装所有「已注册且未启用」的 hook（安装点 = start 路径）。
+    /// 类对象由业务编译期声明（链接期存在），安装恒成功；hook 点方法
+    /// 不存在/签名不支持时 swizzle 内部记日志跳过，不影响通道启用。
     func installAllIfNeeded() {
         let pending: [Entry]
         lock.lock()
@@ -235,24 +232,15 @@ final class LongConnHookEngine: @unchecked Sendable {
         guard !pending.isEmpty else { return }
 
         var newlyEnabled: [String] = []
-        var skipped: [String] = []
         for entry in pending {
-            if entry.install() {
-                lock.lock()
-                enabledValue.insert(entry.channelId)
-                lock.unlock()
-                newlyEnabled.append(entry.channelId)
-            } else {
-                skipped.append(entry.channelId)
-            }
+            entry.install()
+            lock.lock()
+            enabledValue.insert(entry.channelId)
+            lock.unlock()
+            newlyEnabled.append(entry.channelId)
         }
-
         if !newlyEnabled.isEmpty {
             SDKLog.info("longconn hook: channels enabled (\(newlyEnabled.joined(separator: ", ")))",
-                        category: "longconn")
-        }
-        if !skipped.isEmpty {
-            SDKLog.info("longconn hook: no known framework detected (channels: \(skipped.joined(separator: ", "))), skipped",
                         category: "longconn")
         }
     }
@@ -468,15 +456,17 @@ final class LongConnHookEngine: @unchecked Sendable {
     /// 从 receive hook 参数数组中挑出"包对象"。delegate 回调惯例为
     /// `(socket, packet, ...)`（末尾常带 tag/flag 等数值参数），规则：
     /// 倒序遍历，最后一个非 NSNumber（数值）且非 NSNull（nil 占位）的参数
-    /// 即包对象。挑错时业务闭包强转失败返回 nil，安全降级不采集。
+    /// 即包对象。若全部参数都是数值/占位（罕见，如单对象数值包），
+    /// 兜底返回最后一个参数，保证闭包仍能收到包（由业务强转兜底）。
     /// - Parameter args: hook block 打包的方法参数数组（self 之后）。
-    /// - Returns: 包对象；全部为数值/空占位时返回 nil。
+    /// - Returns: 包对象；数组为空时返回 nil。
     private static func pickPacketArgument(from args: [Any]) -> Any? {
+        guard !args.isEmpty else { return nil }
         for arg in args.reversed() {
             if arg is NSNumber || arg is NSNull { continue }
             return arg
         }
-        return nil
+        return args.last  // 全数值/占位兜底
     }
 
     /// 包体解码链（框架无关通用）：gzip 嗅探解压 → 业务 customPayloadDecoder

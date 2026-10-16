@@ -5,11 +5,11 @@
 //  L6.5a（2026-10-16 决策 D-L6.5 方案 A）：通用声明式接入层单测。
 //
 //  验证语义：
-//  - 探测命中 → 启用；调用 hook 点 → 采集记录 + 原实现仍执行（业务零感知）；
-//  - 探测未命中 → 优雅回退（不启用、不崩溃、不报错）；
+//  - 注册即启用；调用 hook 点 → 采集记录 + 原实现仍执行（业务零感知）；
+//  - 无 hook 点的声明 → 通道启用但无采集（优雅回退，不崩溃）；
 //  - 同 channelId 重复注册幂等；
 //  - injector 闭包经 PushMockInjecting 协议挂载并可注入；
-//  - 采集记录恒带声明 channelId（framework 由通道元信息承载，L6.2）。
+//  - 采集记录恒带声明 channelId（adapter 标识，L6.2）。
 //
 
 import XCTest
@@ -51,6 +51,30 @@ final class LongConnHookTests: XCTestCase {
         }
     }
 
+    /// 模拟 (对象, UInt16) 回调类（connect(toHost:onPort:) 形态）。
+    @objc final class FakePortedSocket: NSObject {
+        nonisolated(unsafe) static var lastPort: UInt16?
+        @objc dynamic func connect(toHost host: NSString, onPort port: UInt16) {
+            FakePortedSocket.lastPort = port
+        }
+    }
+
+    /// 模拟不支持签名（Float 参数）：引擎应跳过 swizzle，不崩溃。
+    @objc final class FakeFloatDelegate: NSObject {
+        nonisolated(unsafe) static var lastFloat: Float = 0
+        @objc dynamic func socket(_ socket: FakeSocket, didReadFloat value: Float) {
+            FakeFloatDelegate.lastFloat = value
+        }
+    }
+
+    /// 模拟单对象数值回调（NSNumber 装箱）：验证包对象挑选兜底。
+    @objc final class FakeNumberDelegate: NSObject {
+        nonisolated(unsafe) static var lastNumber: NSNumber?
+        @objc dynamic func didReceive(_ value: NSNumber) {
+            FakeNumberDelegate.lastNumber = value
+        }
+    }
+
     /// 锁保护记录收集器（recordSink 闭包为 @Sendable）。
     private final class RecordCollector: @unchecked Sendable {
         let lock = NSLock()
@@ -81,15 +105,13 @@ final class LongConnHookTests: XCTestCase {
     // MARK: - 探测命中：采集 + 原实现调用
 
     func testProbeHitCollectsAndPreservesOriginalBehavior() {
-        let socketClass = FakeSocket.self
         let delegateClass = FakeDelegate.self
         let collector = RecordCollector()
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
 
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            probeClass: socketClass,
-            connect: LongConnHookPoint(klass: socketClass,
+            connect: LongConnHookPoint(klass: FakeSocket.self,
                                        selector: #selector(FakeSocket.connect)),
             receive: LongConnHookPoint(klass: delegateClass,
                                        selector: #selector(FakeDelegate.didReceive(_:))),
@@ -126,14 +148,12 @@ final class LongConnHookTests: XCTestCase {
     // MARK: - 双对象模板（socket(_:didReadData:) 形态）
 
     func testTwoObjectsTemplate() {
-        let socketClass = FakeSocket.self
         let delegateClass = FakeSocketDelegate.self
         let collector = RecordCollector()
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
 
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            probeClass: socketClass,
             receive: LongConnHookPoint(klass: delegateClass,
                                        selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
             extractPacket: { raw in
@@ -157,14 +177,12 @@ final class LongConnHookTests: XCTestCase {
     // MARK: - (对象, 对象, Int) 模板（socket(_:didReadTalk:withTag:) 形态）
 
     func testTwoObjectsIntTemplate() {
-        let socketClass = FakeSocket.self
         let delegateClass = FakeTagDelegate.self
         let collector = RecordCollector()
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
 
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            probeClass: socketClass,
             receive: LongConnHookPoint(klass: delegateClass,
                                        selector: #selector(FakeTagDelegate.socket(_:didReadTalk:withTag:))),
             extractPacket: { raw in
@@ -192,7 +210,6 @@ final class LongConnHookTests: XCTestCase {
 
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            probeClass: FakeSocket.self,
             receive: LongConnHookPoint(klass: FakeSocketDelegate.self,
                                        selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
             extractPacket: { _ in LongConnPacketInfo(payloadData: Data("x".utf8)) }
@@ -212,7 +229,6 @@ final class LongConnHookTests: XCTestCase {
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            probeClass: FakeSocket.self,
             receive: LongConnHookPoint(klass: FakeSocketDelegate.self,
                                        selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
             extractPacket: { _ in nil }
@@ -230,7 +246,6 @@ final class LongConnHookTests: XCTestCase {
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            probeClass: FakeSocket.self,
             receive: LongConnHookPoint(klass: FakeSocketDelegate.self,
                                        selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
             extractPacket: { _ in
@@ -252,7 +267,6 @@ final class LongConnHookTests: XCTestCase {
         let rawJSON = Data("{\"b\":1,\"a\":2}".utf8)
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            probeClass: FakeSocket.self,
             receive: LongConnHookPoint(klass: FakeSocketDelegate.self,
                                        selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
             extractPacket: { _ in LongConnPacketInfo(payloadData: rawJSON) },
@@ -283,7 +297,6 @@ final class LongConnHookTests: XCTestCase {
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            probeClass: FakeSocket.self,
             receive: LongConnHookPoint(klass: FakeSocketDelegate.self,
                                        selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
             extractPacket: { _ in LongConnPacketInfo(payloadData: Data("fake".utf8)) }
@@ -305,14 +318,14 @@ final class LongConnHookTests: XCTestCase {
         XCTAssertNil(packets[1].mockRuleId)
     }
 
-    // MARK: - 探测未命中：优雅回退
+    // MARK: - 无 hook 点的声明：通道启用但无采集（优雅回退）
 
-    func testProbeMissGracefulFallback() {
+    func testNoHookPointDeclEnablesChannel() {
         let collector = RecordCollector()
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
 
-        // 新模型：hook 点类由业务编译期声明（类对象必存在）；不注册任何
-        // hook 点 = 通道启用但无采集（静默不启用长连接能力），不崩溃。
+        // hook 点类由业务编译期声明（链接期存在）；不注册任何 hook 点 =
+        // 通道启用但无采集（长连接能力静默未启用），不崩溃。
         install(LongConnHookSpec(channelId: "ghost_tcp"))
 
         XCTAssertEqual(LongConnHookEngine.shared.enabledChannelIds, ["ghost_tcp"],
@@ -324,14 +337,8 @@ final class LongConnHookTests: XCTestCase {
     // MARK: - 重复注册幂等
 
     func testDuplicateRegistrationIgnored() {
-        install(LongConnHookSpec(
-            channelId: "fake_tcp",
-            probeClass: FakeSocket.self
-        ))
-        install(LongConnHookSpec(
-            channelId: "fake_tcp",
-            probeClass: FakeSocket.self
-        ))
+        install(LongConnHookSpec(channelId: "fake_tcp"))
+        install(LongConnHookSpec(channelId: "fake_tcp"))
 
         XCTAssertEqual(LongConnHookEngine.shared.registeredChannelIds, ["fake_tcp"],
                        "同 channelId 重复注册应忽略")
@@ -348,7 +355,6 @@ final class LongConnHookTests: XCTestCase {
         let box = PayloadBox()
         install(LongConnHookSpec(
             channelId: "fake_tcp",
-            probeClass: FakeSocket.self,
             injector: { command, ctx in
                 box.lock.lock()
                 box.value = command.payload
@@ -374,5 +380,84 @@ final class LongConnHookTests: XCTestCase {
         let recent = injector.recentInjections(limit: 5)
         XCTAssertEqual(recent.last?.ruleId, "r1", "注入记录应可查询（日志/测试断言）")
         XCTAssertEqual(recent.last?.bizType, "chat")
+    }
+
+    // MARK: - (对象, UInt16) 模板（connect(toHost:onPort:) 形态）
+
+    func testTwoObjectsUInt16Template() {
+        let collector = RecordCollector()
+        LongConnHookEngine.shared.recordSink = { collector.append($0) }
+
+        install(LongConnHookSpec(
+            channelId: "fake_tcp",
+            connect: LongConnHookPoint(
+                klass: FakePortedSocket.self,
+                selector: #selector(FakePortedSocket.connect(toHost:onPort:)))
+        ))
+
+        FakePortedSocket().connect(toHost: "1.2.3.4", onPort: 8080)
+        XCTAssertEqual(FakePortedSocket.lastPort, 8080, "原实现必须仍被调用")
+
+        let events = collector.snapshot().map(\.eventType)
+        XCTAssertTrue(events.contains(.connect), "UInt16 模板应正确 swizzle 并记录 connect")
+    }
+
+    // MARK: - 不支持签名：记日志跳过，不崩溃、不采集
+
+    func testUnsupportedSignatureSkippedGracefully() {
+        let collector = RecordCollector()
+        LongConnHookEngine.shared.recordSink = { collector.append($0) }
+
+        // Float 参数编码（f）不在推断表内 → swizzle 跳过。
+        install(LongConnHookSpec(
+            channelId: "fake_tcp",
+            receive: LongConnHookPoint(
+                klass: FakeFloatDelegate.self,
+                selector: #selector(FakeFloatDelegate.socket(_:didReadFloat:)))
+        ))
+
+        // 直接调用原方法：未 swizzle，原实现照常执行，不产生记录。
+        FakeFloatDelegate().socket(FakeSocket(), didReadFloat: 1.5)
+        XCTAssertEqual(FakeFloatDelegate.lastFloat, 1.5, "原实现必须仍被调用")
+        XCTAssertTrue(collector.snapshot().isEmpty, "不支持的签名不应产生记录")
+        // 不崩溃：到达此处即通过。
+    }
+
+    // MARK: - 包对象为数值（NSNumber）时兜底挑选，闭包仍能收到
+
+    func testNumericPacketArgumentFallback() {
+        let collector = RecordCollector()
+        LongConnHookEngine.shared.recordSink = { collector.append($0) }
+
+        install(LongConnHookSpec(
+            channelId: "fake_tcp",
+            receive: LongConnHookPoint(
+                klass: FakeNumberDelegate.self,
+                selector: #selector(FakeNumberDelegate.didReceive(_:))),
+            extractPacket: { raw in
+                // 兜底：全数值参数时 pickPacketArgument 返回最后一个参数，
+                // 业务强转失败返回 nil 不采集；这里验证闭包确实被调用到。
+                guard let num = raw as? NSNumber else { return nil }
+                return LongConnPacketInfo(payloadData: Data("num=\(num.intValue)".utf8))
+            }
+        ))
+
+        FakeNumberDelegate().didReceive(42)
+        XCTAssertEqual(FakeNumberDelegate.lastNumber, 42)
+        let packets = collector.snapshot().filter { $0.eventType == .packet }
+        XCTAssertEqual(packets.count, 1, "数值包对象应经兜底挑选到达 extractPacket")
+    }
+
+    // MARK: - nextFakeMsgId 连续调用唯一性
+
+    func testNextFakeMsgIdUniqueAcrossCalls() {
+        let ctx = LongConnHookInjectContext()
+        var seen = Set<UInt64>()
+        for _ in 0..<100 {
+            let id = ctx.nextFakeMsgId()
+            XCTAssertFalse(seen.contains(id), "nextFakeMsgId 连续调用不得重复")
+            seen.insert(id)
+        }
+        XCTAssertEqual(seen.count, 100)
     }
 }
