@@ -211,6 +211,26 @@ final class LongConnHookTests: XCTestCase {
         XCTAssertEqual(packet.adapter, "fdsocket", "引擎采集应如实标注 framework")
     }
 
+    // MARK: - extractPayload 返回 nil = 业务方明确告知不采集（心跳/控制包噪音）
+
+    func testReceiveSkippedWhenExtractorReturnsNil() {
+        let collector = RecordCollector()
+        LongConnHookEngine.shared.recordSink = { collector.append($0) }
+        install(LongConnHookSpec(
+            framework: "fdsocket",
+            channelId: "fake_tcp",
+            probeClassName: NSStringFromClass(FakeSocket.self),
+            receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
+                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
+                                       template: .twoObjects),
+            extractPayload: { _ in nil }
+        ))
+
+        FakeSocketDelegate().socket(FakeSocket(), didReadData: Data("x".utf8))
+        XCTAssertEqual(collector.snapshot().filter { $0.eventType == .packet }.count, 0,
+                       "extractPayload 返回 nil 时不应产生 packet 记录")
+    }
+
     // MARK: - 注入态：注入闭包内触发的记录标 mocked + mockRuleId
 
     func testInjectorMarksMockedRecord() {

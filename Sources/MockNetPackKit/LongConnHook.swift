@@ -403,7 +403,9 @@ final class LongConnHookEngine: @unchecked Sendable {
         case "disconnect":
             record(spec: spec, event: .disconnect, direction: .out, payload: nil)
         case "receive":
-            let payload = spec.extractPayload?(args)
+            // extractPayload 返回 nil = 业务方明确告知此包不采集（如心跳/
+            // 协议控制包，客户端用户不可见、属于噪音）；跳过记录。
+            guard let payload = spec.extractPayload?(args) else { break }
             record(spec: spec, event: .packet, direction: .`in`, payload: payload)
         default:
             break
