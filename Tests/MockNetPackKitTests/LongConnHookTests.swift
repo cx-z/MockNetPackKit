@@ -43,6 +43,14 @@ final class LongConnHookTests: XCTestCase {
         }
     }
 
+    /// 模拟 (对象, 对象, Int) 回调类：socket(_:didReadTalk:withTag:)。
+    @objc final class FakeTagDelegate: NSObject {
+        nonisolated(unsafe) static var lastTag: Int?
+        @objc dynamic func socket(_ socket: FakeSocket, didReadTalk talk: NSString, withTag tag: Int) {
+            FakeTagDelegate.lastTag = tag
+        }
+    }
+
     /// 锁保护记录收集器（recordSink 闭包为 @Sendable）。
     private final class RecordCollector: @unchecked Sendable {
         let lock = NSLock()
@@ -61,6 +69,7 @@ final class LongConnHookTests: XCTestCase {
         FakeSocket.lastConnectCalled = false
         FakeDelegate.lastReceived = nil
         FakeSocketDelegate.lastData = nil
+        FakeTagDelegate.lastTag = nil
         super.tearDown()
     }
 
@@ -146,6 +155,37 @@ final class LongConnHookTests: XCTestCase {
             XCTFail("缺 packet 记录"); return
         }
         XCTAssertEqual(packet.payloadText, "frame1")
+    }
+
+    // MARK: - (对象, 对象, Int) 模板（socket(_:didReadTalk:withTag:) 形态）
+
+    func testTwoObjectsIntTemplate() {
+        let socketClass = NSStringFromClass(FakeSocket.self)
+        let delegateClass = NSStringFromClass(FakeTagDelegate.self)
+        let collector = RecordCollector()
+        LongConnHookEngine.shared.recordSink = { collector.append($0) }
+
+        install(LongConnHookSpec(
+            framework: "fake_push",
+            channelId: "fake_tcp",
+            probeClassName: socketClass,
+            receive: LongConnHookPoint(className: delegateClass,
+                                       selector: #selector(FakeTagDelegate.socket(_:didReadTalk:withTag:)),
+                                       template: .twoObjectsInt),
+            extractPayload: { args in
+                guard let talk = args.dropFirst().first as? NSString else { return nil }
+                return talk as String
+            }
+        ))
+
+        let delegate = FakeTagDelegate()
+        delegate.socket(FakeSocket(), didReadTalk: "hello" as NSString, withTag: 7)
+        XCTAssertEqual(FakeTagDelegate.lastTag, 7, "原实现仍执行")
+
+        guard let packet = collector.snapshot().first(where: { $0.eventType == .packet }) else {
+            XCTFail("缺 packet 记录"); return
+        }
+        XCTAssertEqual(packet.payloadText, "hello")
     }
 
     // MARK: - 探测未命中：优雅回退

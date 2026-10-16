@@ -43,11 +43,13 @@ import ObjectiveC
 /// - `.twoObjects`：双对象参数（如 `socket(_:didReceiveMessage:)`、
 ///   `socket(_:didReadData:)`、`connect(to:port:)` 等）
 /// - `.twoObjectsUInt16`：（对象, 对象, UInt16）（如 `connectToHost:onPort:`）
+/// - `.twoObjectsInt`：（对象, 对象, Int）（如 `socket(_:didReadTalk:withTag:)`）
 public enum LongConnHookTemplate: Sendable {
     case noArg
     case singleObject
     case twoObjects
     case twoObjectsUInt16
+    case twoObjectsInt
 }
 
 /// 单个 hook 点声明：方法所在类 + selector + 签名模板。
@@ -360,6 +362,13 @@ final class LongConnHookEngine: @unchecked Sendable {
                 LongConnHookEngine.invokeOriginalTwoObjectsUInt16(target, origSelector, a1, a2)
             }
             return b as Any
+        case .twoObjectsInt:
+            // (对象, 对象, Int) 三参数方法：block 需声明 self + 全部 3 个方法参数。
+            let b: @convention(block) (AnyObject, AnyObject?, AnyObject?, Int) -> Void = { target, a1, a2, a3 in
+                onCall([a1 ?? NSNull(), a2 ?? NSNull(), a3])
+                LongConnHookEngine.invokeOriginalTwoObjectsInt(target, origSelector, a1, a2, a3)
+            }
+            return b as Any
         }
     }
 
@@ -414,6 +423,12 @@ final class LongConnHookEngine: @unchecked Sendable {
         typealias Fn = @convention(c) (AnyObject, Selector, AnyObject?, UInt16) -> Void
         let fn = unsafeBitCast(class_getMethodImplementation(type(of: target), sel), to: Fn.self)
         fn(target, sel, a1, a2)
+    }
+
+    private static func invokeOriginalTwoObjectsInt(_ target: AnyObject, _ sel: Selector, _ a1: AnyObject?, _ a2: AnyObject?, _ a3: Int) {
+        typealias Fn = @convention(c) (AnyObject, Selector, AnyObject?, AnyObject?, Int) -> Void
+        let fn = unsafeBitCast(class_getMethodImplementation(type(of: target), sel), to: Fn.self)
+        fn(target, sel, a1, a2, a3)
     }
 }
 
