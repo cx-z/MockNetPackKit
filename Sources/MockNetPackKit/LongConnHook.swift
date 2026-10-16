@@ -34,37 +34,19 @@ import ObjectiveC
 
 // MARK: - 声明类型（公开面）
 
-/// 被 hook 方法的签名模板（LongConnHook 引擎支持的回调形态）。
+/// 单个 hook 点声明：方法所在类对象 + selector。
 ///
-/// 业务方按自己框架回调的真实签名选择；模板决定 SDK 如何转发参数与
-/// 如何调用原实现。覆盖主流长连接框架回调形态：
-/// - `.noArg`：无参方法（如 `connect` / `disconnect` / `stopHeartbeat`）
-/// - `.singleObject`：单对象参数（如 `onMessage(_ message:)`）
-/// - `.twoObjects`：双对象参数（如 `socket(_:didReceiveMessage:)`、
-///   `socket(_:didReadData:)`、`connect(to:port:)` 等）
-/// - `.twoObjectsUInt16`：（对象, 对象, UInt16）（如 `connectToHost:onPort:`）
-/// - `.twoObjectsInt`：（对象, 对象, Int）（如 `socket(_:didReadTalk:withTag:)`）
-public enum LongConnHookTemplate: Sendable {
-    case noArg
-    case singleObject
-    case twoObjects
-    case twoObjectsUInt16
-    case twoObjectsInt
-}
-
-/// 单个 hook 点声明：方法所在类 + selector + 签名模板。
+/// 签名模板（参数个数/类型）由 SDK 从方法的 ObjC 类型编码自动推断，
+/// 业务方无需手写。不支持的签名在安装时记日志跳过（不崩溃）。
 public struct LongConnHookPoint: Sendable {
-    /// 方法所在类名（NSClassFromString 探测；框架未加载则跳过该 hook）。
-    public let className: String
+    /// 方法所在类对象（编译期类型安全；框架未加载时 swizzle 跳过）。
+    public let klass: AnyClass
     /// 被 hook 的方法 selector。
     public let selector: Selector
-    /// 签名模板。
-    public let template: LongConnHookTemplate
 
-    public init(className: String, selector: Selector, template: LongConnHookTemplate) {
-        self.className = className
+    public init(klass: AnyClass, selector: Selector) {
+        self.klass = klass
         self.selector = selector
-        self.template = template
     }
 }
 
@@ -87,9 +69,10 @@ public struct LongConnPacketInfo: Sendable {
 
 /// 业务方声明（≤20 行）：一个长连接通道的完整接入描述。
 ///
-/// - `framework`：能力来源标识（L6.2 采集标注，Web 详情页展示）。
-/// - `channelId`：记录维度，多通道共存区分。
-/// - `probeClassName`：框架探测类名（nil = 不探测，注册即启用）。
+/// - `channelId`：记录维度 + Mock 规则下发路由（必填；多通道并存靠它区分）。
+/// - `framework`：能力来源标识（L6.2 采集标注，Web 详情页展示）；可选，
+///   缺省用 channelId。
+/// - `probeClass`：框架探测类对象（可选；nil = 注册即启用）。
 /// - `connect` / `disconnect`：生命周期 hook 点（可选；调用即记录
 ///   connect/disconnect 事件）。
 /// - `receive`：消息接收 hook 点（可选；调用即采集，包体经
@@ -99,40 +82,56 @@ public struct LongConnPacketInfo: Sendable {
 /// - `customPayloadDecoder`：框架特有 payload 解码（可选；如嵌套 protobuf
 ///   剥层）。对一包原始数据返回可读文本；返回 nil = 交 SDK 通用解码链
 ///   （gzip 嗅探 → JSON pretty → UTF-8 → 字节数，见 MNPPayloadPreview）。
-/// - `injector`：Mock Push 注入闭包（可选；`PushRuleCommand` → 是否
-///   投递成功）。框架特有假消息构造/投递由业务方自己的工具提供
-///   （此处一行调用）。
+/// - `injector`：Mock Push 注入闭包（可选；`PushRuleCommand` + 注入上下文
+///   → 是否投递成功）。框架特有假消息构造/投递由业务方自己的工具提供
+///   （此处一行调用）；假包唯一 msgId 由 `context.nextFakeMsgId()` 生成。
 public struct LongConnHookSpec: Sendable {
-    public let framework: String
     public let channelId: String
-    public let probeClassName: String?
+    public let framework: String
+    public let probeClass: AnyClass?
     public let connect: LongConnHookPoint?
     public let disconnect: LongConnHookPoint?
     public let receive: LongConnHookPoint?
     public let extractPacket: (@Sendable ([Any]) -> LongConnPacketInfo?)?
     public let customPayloadDecoder: (@Sendable (Data) -> String?)?
-    public let injector: (@Sendable (PushRuleCommand) -> Bool)?
+    public let injector: (@Sendable (PushRuleCommand, LongConnHookInjectContext) -> Bool)?
 
     public init(
-        framework: String,
         channelId: String,
-        probeClassName: String? = nil,
+        framework: String? = nil,
+        probeClass: AnyClass? = nil,
         connect: LongConnHookPoint? = nil,
         disconnect: LongConnHookPoint? = nil,
         receive: LongConnHookPoint? = nil,
         extractPacket: (@Sendable ([Any]) -> LongConnPacketInfo?)? = nil,
         customPayloadDecoder: (@Sendable (Data) -> String?)? = nil,
-        injector: (@Sendable (PushRuleCommand) -> Bool)? = nil
+        injector: (@Sendable (PushRuleCommand, LongConnHookInjectContext) -> Bool)? = nil
     ) {
-        self.framework = framework
         self.channelId = channelId
-        self.probeClassName = probeClassName
+        self.framework = framework ?? channelId
+        self.probeClass = probeClass
         self.connect = connect
         self.disconnect = disconnect
         self.receive = receive
         self.extractPacket = extractPacket
         self.customPayloadDecoder = customPayloadDecoder
         self.injector = injector
+    }
+}
+
+/// Mock Push 注入上下文（injector 闭包入参）：提供框架无关的假包工具。
+public final class LongConnHookInjectContext: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seq: UInt64 = 0
+
+    /// 生成假包唯一 msgId（时间戳高 48 位 + 自增序列），避免与真实消息
+    /// 重号被业务去重集合拦截。业务方塞进自己包结构的 msgId 字段。
+    public func nextFakeMsgId() -> UInt64 {
+        lock.lock()
+        seq += 1
+        let n = seq
+        lock.unlock()
+        return (UInt64(Date().timeIntervalSince1970 * 1000) << 16) &+ n
     }
 }
 
@@ -307,13 +306,9 @@ final class LongConnHookEngine: @unchecked Sendable {
 
     /// 安装单个声明（幂等）：探测类 → swizzle hook 点 → 注册通道 →
     /// 挂载注入器。
-    /// - Returns: 是否安装成功（探测类不存在 → false，调用方静默跳过）。
+    /// - Returns: 是否安装成功（hook 点全部 swizzle 失败时仍返回 true——
+    ///   类对象由业务编译期声明，不存在只会链接失败，无运行时回退场景）。
     private func install(spec: LongConnHookSpec) -> Bool {
-        // 探测：声明的框架类不存在 → 优雅回退（不崩溃、不报错）。
-        if let probe = spec.probeClassName {
-            guard NSClassFromString(probe) != nil else { return false }
-        }
-
         let hookPoints: [(String, LongConnHookPoint?)] = [
             ("connect", spec.connect),
             ("disconnect", spec.disconnect),
@@ -347,12 +342,31 @@ final class LongConnHookEngine: @unchecked Sendable {
 
     // MARK: - 签名模板 swizzle
 
-    /// 按模板 swizzle 一个 hook 点：把原实现挂到 `mnp_original_<sel>`，
+    /// 从方法 ObjC 类型编码自动推断签名模板（业务方无需手写 template）。
+    /// 64 位 runtime 编码形如 "v24@0:8@16"（含栈偏移量数字），先剥离所有
+    /// 数字再按参数形态匹配：v=返回值、@=self、:=_cmd，其后为参数编码。
+    /// - Returns: 匹配的模板；不支持的签名返回 nil（安装时记日志跳过）。
+    private static func inferTemplate(from typeEncoding: String) -> LongConnHookTemplate? {
+        let stripped = typeEncoding.filter { !$0.isNumber }
+        guard stripped.hasPrefix("v@:") else { return nil }
+        let params = stripped.dropFirst(3)
+        switch params {
+        case "": return .noArg
+        case "@": return .singleObject
+        case "@@": return .twoObjects
+        case "@S", "@s": return .twoObjectsUInt16   // object + (unsigned) short
+        case "@@q", "@@i", "@@l": return .twoObjectsInt  // (object, object, int 系)
+        default: return nil
+        }
+    }
+
+    /// swizzle 一个 hook 点：把原实现挂到 `mnp_original_<sel>`，
     /// 原 selector 指向拦截实现（先采集、再调原实现，业务行为不变）。
+    /// 签名模板由方法类型编码自动推断（见 inferTemplate）。
     private func swizzle(point: LongConnHookPoint, spec: LongConnHookSpec, kind: String) {
-        guard let cls = NSClassFromString(point.className) else { return }
+        let cls: AnyClass = point.klass
         lock.lock()
-        let classKey = "\(point.className)#\(point.selector)"
+        let classKey = "\(String(describing: cls))#\(point.selector)"
         guard !installedClasses.contains(classKey) else {
             lock.unlock()
             return
@@ -361,7 +375,14 @@ final class LongConnHookEngine: @unchecked Sendable {
         lock.unlock()
 
         guard let method = class_getInstanceMethod(cls, point.selector) else {
-            SDKLog.info("longconn hook: selector not found (class=\(point.className), sel=\(point.selector)), skipped",
+            SDKLog.info("longconn hook: selector not found (class=\(classKey), sel=\(point.selector)), skipped",
+                        category: "longconn")
+            return
+        }
+        guard let encoding = method_getTypeEncoding(method),
+              let encodingStr = String(validatingUTF8: encoding),
+              let template = Self.inferTemplate(from: encodingStr) else {
+            SDKLog.info("longconn hook: unsupported signature (class=\(classKey), sel=\(point.selector)), skipped",
                         category: "longconn")
             return
         }
@@ -372,8 +393,17 @@ final class LongConnHookEngine: @unchecked Sendable {
         let onCall: (@Sendable ([Any]) -> Void) = { [spec] args in
             self.handleCall(kind: kind, spec: spec, args: args)
         }
-        let block = makeBlock(template: point.template, onCall: onCall, origSelector: origSelector)
+        let block = makeBlock(template: template, onCall: onCall, origSelector: origSelector)
         class_replaceMethod(cls, point.selector, imp_implementationWithBlock(block as Any), origTypes)
+    }
+
+    /// 签名模板（引擎内部按方法类型编码自动推断；公开面不暴露）。
+    private enum LongConnHookTemplate: Sendable {
+        case noArg
+        case singleObject
+        case twoObjects
+        case twoObjectsUInt16
+        case twoObjectsInt
     }
 
     /// 构造模板 block（签名固定；参数转 [Any] 交给 onCall）。
@@ -517,18 +547,21 @@ private final class SpecBox: @unchecked Sendable {
 }
 
 /// LongConnHook 注入器（适配 PushMockInjecting 协议；业务闭包一步完成
-/// 构造+投递——L6.5b 起协议即一步注入形态）。
+/// 构造+投递——L6.5b 起协议即一步注入形态；L6.5e 起注入闭包带 context）。
 final class LongConnHookInjector: PushMockInjecting {
     private let channelId: String
-    private let inject: @Sendable (PushRuleCommand) -> Bool
+    private let inject: @Sendable (PushRuleCommand, LongConnHookInjectContext) -> Bool
+    /// 每通道一份注入上下文（msgId 自增序列；锁内安全）。
+    private let context = LongConnHookInjectContext()
 
-    init(channelId: String, inject: @escaping @Sendable (PushRuleCommand) -> Bool) {
+    init(channelId: String,
+         inject: @escaping @Sendable (PushRuleCommand, LongConnHookInjectContext) -> Bool) {
         self.channelId = channelId
         self.inject = inject
     }
 
     func inject(command: PushRuleCommand) -> Bool {
-        let ok = inject(command)
+        let ok = inject(command, context)
         if ok {
             LongConnHookEngine.shared.noteInjection(ruleId: command.ruleId,
                                                     bizType: command.bizType)

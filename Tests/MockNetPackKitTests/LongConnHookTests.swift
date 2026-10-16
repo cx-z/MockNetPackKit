@@ -81,21 +81,18 @@ final class LongConnHookTests: XCTestCase {
     // MARK: - 探测命中：采集 + 原实现调用
 
     func testProbeHitCollectsAndPreservesOriginalBehavior() {
-        let socketClass = NSStringFromClass(FakeSocket.self)
-        let delegateClass = NSStringFromClass(FakeDelegate.self)
+        let socketClass = FakeSocket.self
+        let delegateClass = FakeDelegate.self
         let collector = RecordCollector()
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
 
         install(LongConnHookSpec(
-            framework: "fake_push",
             channelId: "fake_tcp",
-            probeClassName: socketClass,
-            connect: LongConnHookPoint(className: socketClass,
-                                       selector: #selector(FakeSocket.connect),
-                                       template: .noArg),
-            receive: LongConnHookPoint(className: delegateClass,
-                                       selector: #selector(FakeDelegate.didReceive(_:)),
-                                       template: .singleObject),
+            probeClass: socketClass,
+            connect: LongConnHookPoint(klass: socketClass,
+                                       selector: #selector(FakeSocket.connect)),
+            receive: LongConnHookPoint(klass: delegateClass,
+                                       selector: #selector(FakeDelegate.didReceive(_:))),
             extractPacket: { args in
                 guard let msg = args.first as? NSString else { return nil }
                 return LongConnPacketInfo(payloadData: (msg as String).data(using: .utf8) ?? Data())
@@ -129,18 +126,16 @@ final class LongConnHookTests: XCTestCase {
     // MARK: - 双对象模板（socket(_:didReadData:) 形态）
 
     func testTwoObjectsTemplate() {
-        let socketClass = NSStringFromClass(FakeSocket.self)
-        let delegateClass = NSStringFromClass(FakeSocketDelegate.self)
+        let socketClass = FakeSocket.self
+        let delegateClass = FakeSocketDelegate.self
         let collector = RecordCollector()
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
 
         install(LongConnHookSpec(
-            framework: "fake_push",
             channelId: "fake_tcp",
-            probeClassName: socketClass,
-            receive: LongConnHookPoint(className: delegateClass,
-                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
-                                       template: .twoObjects),
+            probeClass: socketClass,
+            receive: LongConnHookPoint(klass: delegateClass,
+                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
             extractPacket: { args in
                 guard let data = args.dropFirst().first as? Data else { return nil }
                 return LongConnPacketInfo(payloadData: data)
@@ -160,18 +155,16 @@ final class LongConnHookTests: XCTestCase {
     // MARK: - (对象, 对象, Int) 模板（socket(_:didReadTalk:withTag:) 形态）
 
     func testTwoObjectsIntTemplate() {
-        let socketClass = NSStringFromClass(FakeSocket.self)
-        let delegateClass = NSStringFromClass(FakeTagDelegate.self)
+        let socketClass = FakeSocket.self
+        let delegateClass = FakeTagDelegate.self
         let collector = RecordCollector()
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
 
         install(LongConnHookSpec(
-            framework: "fake_push",
             channelId: "fake_tcp",
-            probeClassName: socketClass,
-            receive: LongConnHookPoint(className: delegateClass,
-                                       selector: #selector(FakeTagDelegate.socket(_:didReadTalk:withTag:)),
-                                       template: .twoObjectsInt),
+            probeClass: socketClass,
+            receive: LongConnHookPoint(klass: delegateClass,
+                                       selector: #selector(FakeTagDelegate.socket(_:didReadTalk:withTag:))),
             extractPacket: { args in
                 guard let talk = args.dropFirst().first as? NSString else { return nil }
                 return LongConnPacketInfo(payloadData: (talk as String).data(using: .utf8) ?? Data())
@@ -195,12 +188,11 @@ final class LongConnHookTests: XCTestCase {
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
 
         install(LongConnHookSpec(
-            framework: "fdsocket",
             channelId: "fake_tcp",
-            probeClassName: NSStringFromClass(FakeSocket.self),
-            receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
-                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
-                                       template: .twoObjects),
+            framework: "fdsocket",
+            probeClass: FakeSocket.self,
+            receive: LongConnHookPoint(klass: FakeSocketDelegate.self,
+                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
             extractPacket: { _ in LongConnPacketInfo(payloadData: Data("x".utf8)) }
         ))
 
@@ -217,12 +209,10 @@ final class LongConnHookTests: XCTestCase {
         let collector = RecordCollector()
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
         install(LongConnHookSpec(
-            framework: "fdsocket",
             channelId: "fake_tcp",
-            probeClassName: NSStringFromClass(FakeSocket.self),
-            receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
-                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
-                                       template: .twoObjects),
+            probeClass: FakeSocket.self,
+            receive: LongConnHookPoint(klass: FakeSocketDelegate.self,
+                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
             extractPacket: { _ in nil }
         ))
 
@@ -237,12 +227,10 @@ final class LongConnHookTests: XCTestCase {
         let collector = RecordCollector()
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
         install(LongConnHookSpec(
-            framework: "fdsocket",
             channelId: "fake_tcp",
-            probeClassName: NSStringFromClass(FakeSocket.self),
-            receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
-                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
-                                       template: .twoObjects),
+            probeClass: FakeSocket.self,
+            receive: LongConnHookPoint(klass: FakeSocketDelegate.self,
+                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
             extractPacket: { _ in
                 LongConnPacketInfo(payloadData: Data("{}".utf8), summary: "head=1")
             },
@@ -261,12 +249,10 @@ final class LongConnHookTests: XCTestCase {
         // payloadData 为未排序 JSON：通用链应 pretty + key 排序。
         let rawJSON = Data("{\"b\":1,\"a\":2}".utf8)
         install(LongConnHookSpec(
-            framework: "fdsocket",
             channelId: "fake_tcp",
-            probeClassName: NSStringFromClass(FakeSocket.self),
-            receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
-                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
-                                       template: .twoObjects),
+            probeClass: FakeSocket.self,
+            receive: LongConnHookPoint(klass: FakeSocketDelegate.self,
+                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
             extractPacket: { _ in LongConnPacketInfo(payloadData: rawJSON) },
             customPayloadDecoder: { _ in nil }
         ))
@@ -294,12 +280,10 @@ final class LongConnHookTests: XCTestCase {
         let collector = RecordCollector()
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
         install(LongConnHookSpec(
-            framework: "fdsocket",
             channelId: "fake_tcp",
-            probeClassName: NSStringFromClass(FakeSocket.self),
-            receive: LongConnHookPoint(className: NSStringFromClass(FakeSocketDelegate.self),
-                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:)),
-                                       template: .twoObjects),
+            probeClass: FakeSocket.self,
+            receive: LongConnHookPoint(klass: FakeSocketDelegate.self,
+                                       selector: #selector(FakeSocketDelegate.socket(_:didReadData:))),
             extractPacket: { _ in LongConnPacketInfo(payloadData: Data("fake".utf8)) }
         ))
 
@@ -325,29 +309,28 @@ final class LongConnHookTests: XCTestCase {
         let collector = RecordCollector()
         LongConnHookEngine.shared.recordSink = { collector.append($0) }
 
-        install(LongConnHookSpec(
-            framework: "ghost",
-            channelId: "ghost_tcp",
-            probeClassName: "NonExistentFrameworkClass"
-        ))
+        // 新模型：hook 点类由业务编译期声明（类对象必存在）；不注册任何
+        // hook 点 = 通道启用但无采集（静默不启用长连接能力），不崩溃。
+        install(LongConnHookSpec(channelId: "ghost_tcp"))
 
-        XCTAssertTrue(LongConnHookEngine.shared.enabledChannelIds.isEmpty,
-                      "探测未命中不应启用")
-        XCTAssertTrue(collector.snapshot().isEmpty, "未命中不应产生记录")
+        XCTAssertEqual(LongConnHookEngine.shared.enabledChannelIds, ["ghost_tcp"],
+                       "无 hook 点的声明仍启用通道")
+        XCTAssertTrue(collector.snapshot().isEmpty, "无 receive hook 不应产生记录")
         // 不崩溃、不报错：到达此处即通过。
     }
 
     // MARK: - 重复注册幂等
 
     func testDuplicateRegistrationIgnored() {
-        let socketClass = NSStringFromClass(FakeSocket.self)
         install(LongConnHookSpec(
-            framework: "fake_push", channelId: "fake_tcp",
-            probeClassName: socketClass
+            channelId: "fake_tcp",
+            framework: "fake_push",
+            probeClass: FakeSocket.self
         ))
         install(LongConnHookSpec(
-            framework: "fake_push_dup", channelId: "fake_tcp",
-            probeClassName: socketClass
+            channelId: "fake_tcp",
+            framework: "fake_push_dup",
+            probeClass: FakeSocket.self
         ))
 
         XCTAssertEqual(LongConnHookEngine.shared.registeredChannelIds, ["fake_tcp"],
@@ -358,20 +341,21 @@ final class LongConnHookTests: XCTestCase {
     // MARK: - 注入器：经 PushMockInjecting 协议挂载并可注入
 
     func testInjectorMountedAndInvoked() {
-        let socketClass = NSStringFromClass(FakeSocket.self)
         final class PayloadBox: @unchecked Sendable {
             let lock = NSLock()
             var value: String?
         }
         let box = PayloadBox()
         install(LongConnHookSpec(
-            framework: "fake_push",
             channelId: "fake_tcp",
-            probeClassName: socketClass,
-            injector: { command in
+            framework: "fake_push",
+            probeClass: FakeSocket.self,
+            injector: { command, ctx in
                 box.lock.lock()
                 box.value = command.payload
                 box.lock.unlock()
+                // context 提供假包 msgId 生成（业务塞进自己包字段）。
+                _ = ctx.nextFakeMsgId()
                 return true
             }
         ))
