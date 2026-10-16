@@ -78,6 +78,8 @@ public struct LongConnPacketInfo: Sendable {
 ///   （delegate 惯例 `(socket, packet, ...)`，取最后一个非数值参数），
 ///   业务闭包把它解为 `LongConnPacketInfo`（可选；返回 nil = 此包不采集，
 ///   如心跳/协议控制包）；不提供时 receive 调用不产生任何记录。
+///   注意：包对象可能是 NSNull（原方法参数为 nil 时），务必用 `as?`
+///   安全强转，不要 `as!`。
 /// - `customPayloadDecoder`：框架特有 payload 解码（可选；如嵌套 protobuf
 ///   剥层）。对一包原始数据返回可读文本；返回 nil = 交 SDK 通用解码链
 ///   （gzip 嗅探 → JSON pretty → UTF-8 → 字节数，见 MNPPayloadPreview）。
@@ -152,7 +154,7 @@ final class LongConnHookEngine: @unchecked Sendable {
     /// 静态协议需求」的编译器崩溃，见 LongConnAdapterRegistry 文件头注记）。
     private struct Entry: @unchecked Sendable {
         let channelId: String
-        let install: () -> Bool
+        let install: () -> Void
     }
 
     private let lock = NSLock()
@@ -289,11 +291,9 @@ final class LongConnHookEngine: @unchecked Sendable {
 
     // MARK: - 安装
 
-    /// 安装单个声明（幂等）：探测类 → swizzle hook 点 → 注册通道 →
-    /// 挂载注入器。
-    /// - Returns: 是否安装成功（hook 点全部 swizzle 失败时仍返回 true——
-    ///   类对象由业务编译期声明，不存在只会链接失败，无运行时回退场景）。
-    private func install(spec: LongConnHookSpec) -> Bool {
+    /// 安装单个声明（幂等）：swizzle hook 点 → 注册通道 → 挂载注入器。
+    /// hook 点方法不存在/签名不支持时 swizzle 内部记日志跳过，不影响通道启用。
+    private func install(spec: LongConnHookSpec) {
         let hookPoints: [(String, LongConnHookPoint?)] = [
             ("connect", spec.connect),
             ("disconnect", spec.disconnect),
@@ -322,7 +322,6 @@ final class LongConnHookEngine: @unchecked Sendable {
 
         SDKLog.info("longconn hook installed (channel=\(spec.channelId))",
                     category: "longconn")
-        return true
     }
 
     // MARK: - 签名模板 swizzle

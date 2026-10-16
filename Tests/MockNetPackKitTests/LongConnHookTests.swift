@@ -94,6 +94,9 @@ final class LongConnHookTests: XCTestCase {
         FakeDelegate.lastReceived = nil
         FakeSocketDelegate.lastData = nil
         FakeTagDelegate.lastTag = nil
+        FakePortedSocket.lastPort = nil
+        FakeFloatDelegate.lastFloat = 0
+        FakeNumberDelegate.lastNumber = nil
         super.tearDown()
     }
 
