@@ -123,7 +123,7 @@ struct ConnectionClient: Sendable {
         }
     }
 
-    /// POST 且期望 2xx 空响应体（L7.2b：push-rule-commands/ack 返回 204）。
+    /// POST 且期望 2xx 空响应体（push-rule-commands/ack 返回 204）。
     func postNoContent<Body: Encodable>(_ path: String, body: Body?) async throws {
         let base = baseURL.absoluteString.hasSuffix("/")
             ? baseURL.absoluteString

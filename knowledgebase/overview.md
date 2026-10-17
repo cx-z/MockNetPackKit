@@ -1,7 +1,7 @@
 # MockNetPackKit — Overview (L1)
 
 > KB layer L1. Next: [`architecture.md`](architecture.md) → [`code-map.md`](code-map.md).
-> Product source of truth: `tasks/需求文档.md` v1.2, `server/openapi/mocknetpack.yaml` v0.9.0.
+> Product source of truth: `tasks/需求文档.md`, `server/openapi/mocknetpack.yaml`.
 
 ## What is MockNetPackKit
 
@@ -57,10 +57,10 @@ The host app typically: calls `start(server:)` at launch (Debug only), optionall
 | Item | Value | Where |
 |---|---|---|
 | SDK version | Reported by the SDK via `MockNetPackKit.version`; the host app may pin any compatible release | `MockNetPackKit.version` |
-| Heartbeat interval | Server-driven: **3s capturing / 5s idle** (dynamic since server-driven), clamped 2…300s (4.12: floor lowered from 5 so the 3s capturing contract passes through) | `ConnectionController.heartbeatInterval()` |
+| Heartbeat interval | Server-driven: **3s capturing / 5s idle** (dynamic since server-driven), clamped 2…300s (floor lowered from 5 so the 3s capturing contract passes through) | `ConnectionController.heartbeatInterval()` |
 | Heartbeat backoff | Exponential 1s → max 30s | `advanceBackoff()` |
 | Traffic batch | 200 entries / 8 MB / 2s flush; contract max 500 per upload | `TrafficCaptureController` |
-| Body truncation | 1 MB per body (fixed, contract v0.2.0) | `MockNetPackURLProtocol.bodyLimit` |
+| Body truncation | 1 MB per body (fixed contract) | `MockNetPackURLProtocol.bodyLimit` |
 | Upload failure | Batch dropped, no retry, no local cache | `TrafficCaptureController.flush()` |
 | Registration semantics | SDK **does not auto-register**; 404 from register/heartbeat ⇒ silent stop (no retry) until app restart | `ConnectionController.performCycle()` |
 | Mock match | `Method (case-insensitive) + URL path`, host ignored, query/body ignored | `MockRuleController.match()` |

@@ -1,8 +1,8 @@
 import XCTest
 @testable import MockNetPackKit
 
-/// ：push mock 规则拉取——模型解码、activeRules 过滤、增量版本比对、
-/// fail-open A（拉取失败沿用旧快照）。能力线 L7（L7.2a）。
+/// push mock 规则拉取——模型解码、activeRules 过滤、增量版本比对、
+/// fail-open A（拉取失败沿用旧快照）。
 final class PushMockRuleTests: XCTestCase {
 
     private let appID = "com.test.app"
@@ -80,7 +80,7 @@ final class PushMockRuleTests: XCTestCase {
     }
 
     /// 规则列表 bizType 字段缺失（旧服务端 omitempty）→ decode 不失败、bizType
-    /// 为 nil。回归：2026-10-16 线上事故同构——PushMockRule.bizType 曾为非
+    /// 为 nil。回归：PushMockRule.bizType 曾为非
     /// Optional String，缺字段令整批规则列表 decode 失败（keyNotFound）。
     func testDecodesRuleWithoutBizType() throws {
         let json = """
@@ -96,7 +96,7 @@ final class PushMockRuleTests: XCTestCase {
     // MARK: - PushRuleCommand 指令解码（心跳响应 pushCommands 线格式）
 
     /// bizType 字段缺失（空 bizType 规则 + 服务端 omitempty）→ decode 不失败、
-    /// bizType 为 nil。回归：2026-10-16 线上事故——该字段曾为非 Optional String，
+    /// bizType 为 nil。回归：该字段曾为非 Optional String，
     /// 缺字段令整个心跳响应 decode 失败（keyNotFound），指令永不消费。
     func testDecodesCommandWithoutBizType() throws {
         let json = """

@@ -31,7 +31,7 @@ iOS/MockNetPackKit/
 | `QRConnectParser.swift` |  QR payload parser | `parse(_:expectedAppID:)` → `QRConnectPayload{serverURL,appID,token}`; `QRConnectParseError` (notMockNetPack/unsupportedVersion/invalidServer/missingAppID/appMismatch/missingToken); base64url decode |
 | `QRScannerViewController.swift` |  native QR scanner (iOS-only, `#if canImport(UIKit)`) | `QRScanProviding` protocol + `QRScannerViewController` (AVCaptureSession + AVCaptureMetadataOutput(.qr), camera permission); `QRScanError` (cameraDenied/cameraUnavailable) |
 | `BinaryCodec.swift` | gzip compression | `Data.gzipCompressed()` (standard gzip via zlib, `MAX_WBITS+16`) — decompression stays in the business `decrypt` closure |
-| `Models.swift` | Contract models: RegisterDeviceRequest (**+appName v0.9.0**, +pairingToken/deviceName ), DeviceView, session/traffic/rule payloads |
+| `Models.swift` | Contract models: RegisterDeviceRequest (+appName, +pairingToken/deviceName), DeviceView, session/traffic/rule payloads |
 
 ## Files — smoke tool (`Sources/MockNetPackSmoke/main.swift`)
 
@@ -44,7 +44,7 @@ CLI for manual end-to-end verification against a local `mockd` (Admin :4290). St
 | `ConnectionControllerTests.swift` | register/heartbeat loop, 404-stop, backoff, session derivation |
 | `QRConnectParserTests.swift` |  QR parsing: valid/base64url, wrong scheme/host/version, invalid server, missing appID/token, appMismatch |
 | `ServerAddressStoreTests.swift` |  address save/load/clear, per-app isolation, invalid value rejection |
-| `ConnectByScanTests.swift` |  facade: unconfigured start, scan success (token in register, did reuse, address persisted, connects), D6 switch, failures keep saved address, cancelled/camera errors |
+| `ConnectByScanTests.swift` |  facade: unconfigured start, scan success (token in register, did reuse, address persisted, connects), switch, failures keep saved address, cancelled/camera errors |
 | `TrafficCaptureTests.swift` | capture on/off, batching thresholds, flush, drop-on-failure |
 | `MockURLProtocol.swift` | Stub URLProtocol used to simulate the real network in tests |
 | `MockRuleTests.swift` | match semantics (Method+Path, case-insensitivity), snapshot apply |

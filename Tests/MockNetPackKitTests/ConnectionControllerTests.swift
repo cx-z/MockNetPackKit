@@ -106,7 +106,7 @@ final class ConnectionControllerTests: XCTestCase {
         XCTAssertEqual(body?["platform"] as? String, "ios")
         XCTAssertEqual(body?["sdkVersion"] as? String, "0.2.0-m9")
         XCTAssertEqual(body?["appVersion"] as? String, "1.0")
-        XCTAssertEqual(body?["appName"] as? String, "IntegratingApp", "v0.9.0: SDK must report the host app display name")
+        XCTAssertEqual(body?["appName"] as? String, "IntegratingApp", "SDK must report the host app display name")
         XCTAssertNotNil(body?["did"] as? String)
 
         // 心跳路径带 app/did。

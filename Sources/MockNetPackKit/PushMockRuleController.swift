@@ -1,20 +1,20 @@
 import Foundation
 import os
 
-/// 本地 push mock 规则控制器（能力线 L7）：持有当前生效 push 规则快照，
+/// 本地 push mock 规则控制器：持有当前生效 push 规则快照，
 /// 供注入器（PushMockInjecting，由适配器模块挂载）在业务消费前执行替换。
 ///
-/// 语义（对齐 MockRuleController 模式 + 技术方案 3.2/3.4 + 决策 D1）：
+/// 语义（对齐 MockRuleController 模式 + 技术方案 3.2/3.4）：
 /// - 快照来自心跳后按 `pushRulesVersion` 增量拉取
 ///   `GET .../push-mock-rules?sinceVersion=`。仅服务端 `effective=true` 的
 ///   规则会被下发并参与匹配。
 /// - 匹配键 = channelId（必选）+ bizType（可选）+ payload 轻量条件
-///   （最多 1 条 JSONPath + 1 个子串，决策 D1）。
+///   （最多 1 条 JSONPath + 1 个子串）。
 /// - **fail-open A**：从未拉到快照时拉取失败 → 不 Mock，原样放行；
 ///   已有快照后本次拉取失败 → 沿用旧快照继续 Mock。
 /// - 规则跨会话保留，但仅在代理层拦截钩子启用（Debug-only）且规则
 ///   effective=true 时执行。
-/// - 注入器（L6.1a 重做）：由适配器模块在安装成功后挂载
+/// - 注入器：由适配器模块在安装成功后挂载
 ///   `PushMockInjecting` 实现；未挂载 → 指令跳过待下次心跳（fail-open）。
 public final class PushMockRuleController: @unchecked Sendable {
 
@@ -82,13 +82,13 @@ public final class PushMockRuleController: @unchecked Sendable {
         rules = list.rules
     }
 
-    // MARK: - L7.2b 模拟推送：指令注入 + ack 回报
+    // MARK: - 模拟推送：指令注入 + ack 回报
 
     /// 心跳成功后调用：对心跳响应携带的 pending 指令逐条调用注入器（一步
     /// 构造+投递假消息）；注入成功 → ack 回报服务端（指令消费）；注入失败
     /// （无活跃连接 / 构造失败）→ 不 ack，指令保留待下次心跳重试。
     /// 注入/回报失败均不阻塞心跳周期（fail-open）。注入器未挂载（未声明
-    /// 注入闭包 / 未安装 hook）→ 指令跳过保留，待下次心跳（L6.5a 声明制语义）。
+    /// 注入闭包 / 未安装 hook）→ 指令跳过保留，待下次心跳（声明制语义）。
     func injectPendingCommands(client: ConnectionClient, app: String, did: String,
                                commands: [PushRuleCommand]) async {
         guard !commands.isEmpty else { return }
@@ -133,7 +133,7 @@ public final class PushMockRuleController: @unchecked Sendable {
 
     /// 按 channelId+bizType 返回本地生效规则（effective=true；bizType 空规则
     /// 匹配任意 bizType——匹配键 channelId 必选 + bizType 可选）。
-    /// 实时拦截器随后对 payload 做轻量条件匹配（决策 D1：最多 1 条 JSONPath
+    /// 实时拦截器随后对 payload 做轻量条件匹配（最多 1 条 JSONPath
     /// + 1 个子串）。
     func activeRules(channelId: String, bizType: String) -> [PushMockRule] {
         lock.lock()

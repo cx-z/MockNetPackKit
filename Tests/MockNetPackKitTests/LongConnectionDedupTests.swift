@@ -1,7 +1,7 @@
 import XCTest
 @testable import MockNetPackKit
 
-/// L5.5：注入模式（L4 业务桥接）与代理模式（L5 自动采集）并存去重——
+/// 注入模式（业务桥接）与代理模式（自动采集）并存去重——
 /// 同一通道（channelId）同一包（msgId）在去重窗口内不重复上报；
 /// 窗口外重复（服务端真实重发）保持现有 duplicate 标记语义不受影响。
 final class LongConnectionDedupTests: XCTestCase {

@@ -82,7 +82,7 @@ public enum MockNetPackKit {
         )
     }
 
-    // MARK: - 长连接日志（能力线 L1；L1.3 草案：类型与 API 签名，采集实现 L2.1）
+    // MARK: - 长连接日志（类型与 API 签名，采集实现位于 TrafficCaptureController）
 
     /// 注册一条长连接通道（可多次调用，支持多框架共存）。
     /// channelId 全局唯一，如 "srwebsocket"、"mqtt"。
@@ -96,12 +96,12 @@ public enum MockNetPackKit {
 
     /// 注入一条长连接记录（业务侧桥接层调用；线程安全，内部缓冲）。
     /// 必填 ≤4：channelId / eventType / ts / payload 三选一（packet/ack 事件必填其一，
-    /// 生命周期事件可省略）；其余字段全可选带默认。首期仅 in 方向 + 生命周期事件。
+    /// 生命周期事件可省略）；其余字段全可选带默认。仅 in 方向 + 生命周期事件。
     public static func recordLongConnection(_ record: LongConnectionRecordInput) {
         LongConnectionCollector.shared.record(record)
     }
 
-    /// 注册通道编解码器（L4：业务层注入私有协议解码能力）。
+    /// 注册通道编解码器（业务层注入私有协议解码能力）。
     /// 注册后 SDK 收到该通道 raw packet 自动解码填 payloadText，业务回调里
     /// 无需再手动回填解码文本（消除业务侧插桩点）。
     public static func registerLongConnectionCoder(_ channelId: String,
@@ -315,7 +315,7 @@ public enum MockNetPackKit {
             return .failure(.unreachable)
         }
 
-        // 4) 成功：D6 切换（stop 幂等）→ 持久化地址 → 启动连接（免扫码直连 A2）。
+        // 4) 成功：切换（stop 幂等）→ 持久化地址 → 启动连接（免扫码直连）。
         ConnectionController.shared.stop()
         ServerAddressStore.save(payload.serverURL, forApp: appID)
         ConnectionController.shared.start(
@@ -364,7 +364,7 @@ public enum MockNetPackKit {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
     }
 
-    /// App 显示名（v0.9.0）：CFBundleDisplayName（如接入方 App 的显示名），回退 CFBundleName（工程名）。
+    /// App 显示名：CFBundleDisplayName（如接入方 App 的显示名），回退 CFBundleName（工程名）。
     /// 随注册请求上报 appName，Web 设备列表优先展示显示名而非 bundle id。
     private static var appName: String? {
         let display = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String

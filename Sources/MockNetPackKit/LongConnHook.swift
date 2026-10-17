@@ -2,7 +2,7 @@
 //  LongConnHook.swift
 //  MockNetPackKit
 //
-//  L6.5a（2026-10-16 决策 D-L6.5 方案 A）：通用声明式长连接接入层。
+//  通用声明式长连接接入层。
 //
 //  背景：SDK 将提交 GitHub 公开，主 SDK 不允许集成任何具体框架信息
 //  （公司内部推送框架、第三方开源框架均不内置）。本文件是公开仓库唯一的
@@ -24,7 +24,7 @@
 //    startUnconfigured 调 LongConnHookEngine.installAllIfNeeded），
 //    幂等可重复调用；未注册任何声明 → 长连接能力静默未启用
 //    （不崩溃、不报错）。
-//  - 多通道共存（决策 D-L6.3）：多次 register 各自启用、各自采集，由
+//  - 多通道共存：多次 register 各自启用、各自采集，由
 //    channelId 区分。
 //
 
@@ -69,7 +69,7 @@ public struct LongConnPacketInfo: Sendable {
 /// 业务方声明（≤20 行）：一个长连接通道的完整接入描述。
 ///
 /// - `channelId`：记录维度 + Mock 规则下发路由 + 采集方式标注
-///   （L6.2 adapter 标识即用它，Web 详情页展示）；必填，多通道并存靠它区分。
+///   （adapter 标识即用它，Web 详情页展示）；必填，多通道并存靠它区分。
 /// - `connect` / `disconnect`：生命周期 hook 点（可选；调用即记录
 ///   connect/disconnect 事件）。
 /// - `receive`：消息接收 hook 点（可选；调用即采集，包体经
@@ -132,7 +132,7 @@ public final class LongConnHookInjectContext: @unchecked Sendable {
 
 // MARK: - 公开入口
 
-/// 通用声明式长连接接入（L6 方案 A；唯一公开接入面）。
+/// 通用声明式长连接接入（唯一公开接入面）。
 public enum LongConnHook {
 
     /// 注册一个长连接通道声明（幂等：同 channelId 重复注册忽略；
@@ -165,7 +165,7 @@ final class LongConnHookEngine: @unchecked Sendable {
     private var installedClasses: Set<String> = []
 
     /// 记录出口（默认上报主 SDK 采集通道；测试注入 fake 收集器）。
-    /// L6.2：不带 framework 标识的纯 API 注入记录由 LongConnectionCollector
+    /// 不带 framework 标识的纯 API 注入记录由 LongConnectionCollector
     /// 统一标注 "unknown-inject"，本引擎记录恒带声明 channelId。
     var recordSink: @Sendable (LongConnectionRecordInput) -> Void = {
         MockNetPackKit.recordLongConnection($0)
@@ -499,7 +499,7 @@ final class LongConnHookEngine: @unchecked Sendable {
                                                ts: Date())
         record.direction = direction
         record.payloadText = payload
-        // L6.2：采集记录带通道标识（channelId），Web 详情页展示采集来源。
+        // 采集记录带通道标识（channelId），Web 详情页展示采集来源。
         record.adapter = spec.channelId
         // 注入态：push mock 注入闭包内触发（本线程）的 packet 记录标 mocked
         // + 规则 ID（Web fake 徽标；服务端递增命中统计）。
@@ -550,7 +550,7 @@ private final class SpecBox: @unchecked Sendable {
 }
 
 /// LongConnHook 注入器（适配 PushMockInjecting 协议；业务闭包一步完成
-/// 构造+投递——L6.5b 起协议即一步注入形态；L6.5e 起注入闭包带 context）。
+/// 构造+投递——协议即一步注入形态；注入闭包带 context）。
 final class LongConnHookInjector: PushMockInjecting {
     private let channelId: String
     private let inject: @Sendable (PushRuleCommand, LongConnHookInjectContext) -> Bool

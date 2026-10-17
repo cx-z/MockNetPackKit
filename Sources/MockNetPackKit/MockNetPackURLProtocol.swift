@@ -17,7 +17,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     /// SDK 自身请求的跳过标记 header（ConnectionClient 统一携带）。
     static let skipHeader = "X-MockNetPack-Skip"
 
-    /// 请求/响应体截断上限（契约 v0.2.0： 固定 1MB，不做配置项）。
+    /// 请求/响应体截断上限（契约：固定 1MB，不做配置项）。
     static let bodyLimit = 1_048_576
 
     /// 请求体读取超时（4.21）：`readBody` 在 URL 加载线程上轮询
@@ -142,7 +142,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         let response = HTTPURLResponse(
             url: url, statusCode: mock.statusCode,
             httpVersion: "HTTP/1.1", headerFields: headerFields)
-        //  回放三级 fallback（2026-09-21 调整顺序）：
+        //  回放三级 fallback：
         // ① bodyBase64 有原始字节 → 按原始字节回放（未编辑的二进制规则，"Mock 此请求"直接启用）
         // ② body 有编辑过的文本 + encoder 可用 → 编码回私有二进制协议字节（Web 编辑生效）
         // ③ 否则 → UTF-8 文本直传（纯文本 JSON 接口）

@@ -2,7 +2,7 @@ import Foundation
 
 /// did 生成与持久化。
 ///
-/// 契约约束（server/openapi/mocknetpack.yaml v0.1.0）：
+/// 契约约束（server/openapi/mocknetpack.yaml）：
 /// - SDK 生成，App 作用域内唯一；
 /// - App 内持久化（重启不变）；
 /// - 不依赖设备硬件标识（隐私/合规；同机多 App 各自独立）。

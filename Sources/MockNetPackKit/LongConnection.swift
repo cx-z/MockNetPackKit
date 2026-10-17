@@ -1,21 +1,21 @@
 import Foundation
 
 // ============================================================================
-// 长连接日志（能力线 L1；与 server/openapi/mocknetpack.yaml v0.14.0 对齐）
+// 长连接日志（与 server/openapi/mocknetpack.yaml 对齐）
 //
-// L1.3 草案：本文件仅定义「类型 + API 签名」——
+// 本文件定义「类型 + API 签名」与采集入口：
 //   LongConnectionRecordInput（必填 ≤4：channelId/eventType/ts + payload 三选一）、
 //   LongConnectionCollector（通道注册 + 采集开关 + record 入口壳）。
 // 采集实现（缓冲、独立额度 1000、payload 截断 10KB/预览 1KB、snapshot 合并 30s 兜底、
-// 攒批上报 type=longconn）在 L2.1 落地；本阶段方法体为空实现，不采集、不改变业务行为。
+// 攒批上报 type=longconn）位于 TrafficCaptureController。
 // ============================================================================
 
 /// 长连接日志方向（契约 LongConnectionRecordInput.direction）。
-/// 首期仅 `in` + 生命周期事件（决策 #1：out 不记录）；out 预留保持模型完整。
+/// 仅 `in` + 生命周期事件被采集；out 预留保持模型完整。
 public enum LongConnectionDirection: String, Codable, Sendable {
-    /// 入站包 / 生命周期事件（首期唯一采集方向）。
+    /// 入站包 / 生命周期事件（唯一采集方向）。
     case `in` = "in"
-    /// 出站包（预留，首期不记录）。
+    /// 出站包（预留，不记录）。
     case out = "out"
 }
 
@@ -31,7 +31,7 @@ public enum LongConnectionEventType: String, Codable, Sendable {
     case packet = "packet"
     /// 已发送 ACK。
     case ack = "ack"
-    /// 模拟推送 ACK 被拦截（L7.2b：业务对假 push 的 ACK，丢弃不上行）。
+    /// 模拟推送 ACK 被拦截（业务对假 push 的 ACK，丢弃不上行）。
     case ackBlocked = "ack_blocked"
     /// 连接快照（携带 snapshot）。
     case snapshot = "snapshot"
@@ -143,7 +143,7 @@ public struct LongConnectionRecordInput: Codable, Sendable {
     public var payloadBase64: String? = nil
     /// 截断预览（payload 超 10KB 时仅存预览 ≤1KB）；三选一之一。
     public var payloadPreview: String? = nil
-    /// 方向；默认 `in`（首期仅 in + 生命周期事件）。
+    /// 方向；默认 `in`（仅 in + 生命周期事件）。
     public var direction: LongConnectionDirection = .`in`
     /// 消息 ID（字符串化，避免跨端 64 位溢出）。
     public var msgId: String? = nil
@@ -158,12 +158,12 @@ public struct LongConnectionRecordInput: Codable, Sendable {
     public var empty: Bool = false
     /// 是否已发送 ACK。
     public var ackSent: Bool = false
-    /// 是否被 push mock 规则替换（能力线 L7：拦截命中后标记；Web 显示
+    /// 是否被 push mock 规则替换（拦截命中后标记；Web 显示
     /// 「Mock 命中」）。未命中包保持 false，老 SDK 不携带（零副作用）。
     public var mocked: Bool = false
-    /// 替换该包的 push mock 规则 ID（能力线 L7；服务端据此递增命中统计）。
+    /// 替换该包的 push mock 规则 ID（服务端据此递增命中统计）。
     public var mockRuleId: String? = nil
-    /// 采集方式标识（L6.2）：能力来源（如 "srwebsocket"）；业务侧 API 注入
+    /// 采集方式标识：能力来源（如 "srwebsocket"）；业务侧 API 注入
     /// 且未标来源的记录由 collector 统一标 "unknown-inject"；老 SDK 不携带
     /// （Web 缺省展示，零副作用）。
     public var adapter: String? = nil
@@ -193,7 +193,7 @@ public struct LongConnectionRecordInput: Codable, Sendable {
     }
 }
 
-/// 长连接通道编解码器（L4：业务层注入解码能力，SDK 自动匹配解析）。
+/// 长连接通道编解码器（业务层注入解码能力，SDK 自动匹配解析）。
 ///
 /// 设计要点：
 /// - 解码是业务知识（protobuf schema / 私有协议格式），SDK 不内嵌；
@@ -226,10 +226,10 @@ struct LongConnUploadResponse: Decodable {
     let count: Int
 }
 
-/// 长连接采集控制器（能力线 L1）。
+/// 长连接采集控制器。
 ///
 /// 职责：通道注册表（多框架共存）；采集入口转发到 TrafficCaptureController
-/// （L2.1 起：缓冲、独立额度 1000、payload 截断 10KB/预览 1KB、snapshot 合并
+/// （缓冲、独立额度 1000、payload 截断 10KB/预览 1KB、snapshot 合并
 /// 30s 兜底、攒批上报 type=longconn 均在其上实现，与 HTTP 流量互不干扰）。
 final class LongConnectionCollector: @unchecked Sendable {
 
@@ -241,7 +241,7 @@ final class LongConnectionCollector: @unchecked Sendable {
     private let lock = NSLock()
     /// 已注册通道 → 元信息（channelId 全局唯一，支持多框架共存）。
     private var channelsValue: [String: [String: String]] = [:]
-    /// 已注册编解码器 → channelId（L4：SDK 自动解码 raw packet）。
+    /// 已注册编解码器 → channelId（SDK 自动解码 raw packet）。
     private var codersValue: [String: any MockNetPackChannelCoder] = [:]
 
     /// 长连接采集开关（默认开；关闭后仅丢弃、不影响业务侧打点）。
@@ -262,7 +262,7 @@ final class LongConnectionCollector: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// 注册通道编解码器（L4；业务层把私有协议解码能力注入 SDK）。
+    /// 注册通道编解码器（业务层把私有协议解码能力注入 SDK）。
     /// 注册后 SDK 收到该通道的 raw packet（无 payloadText）会自动调 decode。
     /// - Parameters:
     ///   - channelId: 通道标识（与注入记录 channelId 一致，如 "srwebsocket"）。
@@ -282,8 +282,8 @@ final class LongConnectionCollector: @unchecked Sendable {
     }
 
     /// 注入一条长连接记录（业务侧桥接层调用；线程安全，内部缓冲）。
-    /// 采集实现（开关判断/截断/额度/上报）位于 TrafficCaptureController（L2.1）。
-    /// L6.2：未带 adapter 标识（非适配器采集、纯 API 注入）的记录统一标注
+    /// 采集实现（开关判断/截断/额度/上报）位于 TrafficCaptureController。
+    /// 未带 adapter 标识（非适配器采集、纯 API 注入）的记录统一标注
     /// "unknown-inject"，Web 如实展示能力来源。
     /// - Parameter record: 上传条目（必填 ≤4，见 LongConnectionRecordInput）。
     func record(_ record: LongConnectionRecordInput) {

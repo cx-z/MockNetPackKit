@@ -152,10 +152,10 @@ final class ConnectByScanTests: XCTestCase {
         XCTAssertEqual(MockNetPackKit.savedServerURL?.absoluteString, "http://mock.local/api/v1")
     }
 
-    /// D1/D4/D7 主路径：扫码 → 解析 → 令牌注册 → 持久化地址 → 连接。
+    /// 主路径：扫码 → 解析 → 令牌注册 → 持久化地址 → 连接。
     /// 注册请求携带 pairingToken，且 did 复用启动时解析的 did（不新生成）。
     func testScanSuccess_RegistersWithToken_PersistsAndConnects() async {
-        // 先启动无参（未配置）→ did 已解析（D7：扫码注册复用同一 did）。
+        // 先启动无参（未配置）→ did 已解析（扫码注册复用同一 did）。
         MockNetPackKit.start()
         let did = ConnectionController.shared.did!
         XCTAssertFalse(did.isEmpty)
@@ -179,7 +179,7 @@ final class ConnectByScanTests: XCTestCase {
         // 地址已持久化（后续 start() 无参直连）。
         XCTAssertEqual(MockNetPackKit.savedServerURL?.absoluteString, "http://mock.local/api/v1")
 
-        // 注册请求：携带令牌 + 复用启动 did（D7 幂等复用关键）。
+        // 注册请求：携带令牌 + 复用启动 did（幂等复用关键）。
         let registerReq = MockURLProtocol.recordedRequests.first { $0.url?.path.hasSuffix("/devices/register") == true }
         XCTAssertNotNil(registerReq, "扫码流程应发起注册")
         let body = bodyOfRequest(registerReq!)
@@ -190,7 +190,7 @@ final class ConnectByScanTests: XCTestCase {
         waitUntil { ConnectionController.shared.connectionState == .connected }
     }
 
-    /// D6：已连接时扫码新服务器 → 直接切换（旧地址被替换，连接指向新服务器）。
+    /// 已连接时扫码新服务器 → 直接切换（旧地址被替换，连接指向新服务器）。
     func testScanWhileConnected_SwitchesServer() async {
         // 先连上旧服务器。
         ServerAddressStore.save(URL(string: "http://old.local/api/v1")!, forApp: testAppID)
@@ -213,7 +213,7 @@ final class ConnectByScanTests: XCTestCase {
                                         })
         assertSuccess(result)
         XCTAssertEqual(MockNetPackKit.savedServerURL?.absoluteString, "http://new.local/api/v1",
-                       "D6：扫码切换应替换持久化地址")
+                       "扫码切换应替换持久化地址")
     }
 
     /// R1.6：非法二维码 → invalidPayload，已保存地址不被覆盖。
@@ -229,7 +229,7 @@ final class ConnectByScanTests: XCTestCase {
         XCTAssertEqual(MockNetPackKit.savedServerURL?.absoluteString, "http://good.local/api/v1")
     }
 
-    /// D4 防错扫：appID 不匹配 → appMismatch。
+    /// 防错扫：appID 不匹配 → appMismatch。
     func testScan_AppMismatch() async {
         let clientConfig: URLSessionConfiguration = config
         let scanner = MockQRScanner(result: qr(appID: "com.other.app"))

@@ -2,14 +2,14 @@
 //  LongConnHookTests.swift
 //  MockNetPackKitTests
 //
-//  L6.5a（2026-10-16 决策 D-L6.5 方案 A）：通用声明式接入层单测。
+//  通用声明式接入层单测。
 //
 //  验证语义：
 //  - 注册即启用；调用 hook 点 → 采集记录 + 原实现仍执行（业务零感知）；
 //  - 无 hook 点的声明 → 通道启用但无采集（优雅回退，不崩溃）；
 //  - 同 channelId 重复注册幂等；
 //  - injector 闭包经 PushMockInjecting 协议挂载并可注入；
-//  - 采集记录恒带声明 channelId（adapter 标识，L6.2）。
+//  - 采集记录恒带声明 channelId（adapter 标识）。
 //
 
 import XCTest
@@ -205,7 +205,7 @@ final class LongConnHookTests: XCTestCase {
         XCTAssertEqual(packet.payloadText, "hello")
     }
 
-    // MARK: - L6.2 采集方式如实标注：引擎记录带 channelId 作为 adapter
+    // MARK: - 采集方式如实标注：引擎记录带 channelId 作为 adapter
 
     func testCollectorLabelsChannelAsAdapter() {
         let collector = RecordCollector()

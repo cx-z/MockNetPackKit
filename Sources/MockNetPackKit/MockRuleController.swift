@@ -3,11 +3,11 @@ import os
 
 /// 本地 Mock 规则控制器：持有当前生效规则快照，供 URLProtocol 匹配回包。
 ///
-/// 语义（需求 6.5/6.6 + 决策 E1/fail-open A）：
+/// 语义（fail-open）：
 /// - 快照来自心跳后按 `rulesVersion` 增量拉取 `GET .../mock-rules?sinceVersion=`。
 ///   仅服务端 `effective=true` 的规则会被下发并参与匹配。
 /// - 匹配键 = Method + URL 路径（不含 Query/Body）；不区分 host。
-/// - **fail-open A**：从未拉到快照时拉取失败 → 不 Mock，走真实网络；
+/// - **fail-open**：从未拉到快照时拉取失败 → 不 Mock，走真实网络；
 ///   已有快照后本次拉取失败 → 沿用旧快照继续 Mock。
 /// - 规则跨会话保留，但仅在抓包会话 capturing 期间生效——
 ///   URLProtocol.canInit 跟随会话开关，idle 时本控制器即便有快照也不会被询问。

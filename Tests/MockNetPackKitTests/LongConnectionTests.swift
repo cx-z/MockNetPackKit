@@ -1,8 +1,8 @@
 import XCTest
 @testable import MockNetPackKit
 
-/// L2.1：长连接采集通道——开关、独立额度（丢最旧）、payload 截断、
-/// snapshot 30s 兜底、多 channel 分组上传（能力线 L1）。
+/// 长连接采集通道——开关、独立额度（丢最旧）、payload 截断、
+/// snapshot 30s 兜底、多 channel 分组上传。
 final class LongConnectionTests: XCTestCase {
 
     /// 测试用可变状态容器（@Sendable 闭包内安全捕获）。
@@ -99,7 +99,7 @@ final class LongConnectionTests: XCTestCase {
         return r
     }
 
-    // MARK: - L6.2 adapter 标识：API 注入未标来源 → unknown-inject；已标来源透传
+    // MARK: - adapter 标识：API 注入未标来源 → unknown-inject；已标来源透传
 
     func testCollectorLabelsUnknownInjectAdapter() {
         let controller = TrafficCaptureController.shared

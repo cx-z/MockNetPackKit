@@ -119,7 +119,7 @@ final class ConnectionController: @unchecked Sendable {
             did: self.did ?? "",
             logHandler: self.logHandler)
 
-        // L6.5a（D-L6.5 方案 A）：LongConnHook 通用声明式长连接接入层。
+        // LongConnHook 通用声明式长连接接入层。
         // 安装业务方已注册的 hook 声明（采集 + 注入挂载）；SDK 不内置、
         // 不依赖任何具体框架。未注册任何声明 → 无动作（不崩溃、不报错）。
         LongConnHookEngine.shared.installAllIfNeeded()
@@ -128,8 +128,8 @@ final class ConnectionController: @unchecked Sendable {
     /// 无服务器启动：仅解析 did 并置 `.unconfigured`，不发起网络、不启动采集；
     /// 但预注入 URLProtocol（TrafficCaptureController.arm()），保证首次接入 App 在
     /// 扫码连接之前创建的 URLSession 也携带拦截器（扫码激活后即可全量抓取）。
-    /// 供 `start()` 无参门面在未保存地址时调用——保证后续扫码复用同一 did（D7：
-    /// 扫码注册与启动注册使用同一设备标识，不因扫码新生成）。
+    /// 供 `start()` 无参门面在未保存地址时调用——保证后续扫码复用同一 did（扫码
+    /// 注册与启动注册使用同一设备标识，不因扫码新生成）。
     func startUnconfigured(appID: String?,
                            externalDID: String? = nil,
                            appVersion: String?,
@@ -161,7 +161,7 @@ final class ConnectionController: @unchecked Sendable {
         // 未连接时 isCapturing=false 不拦业务，扫码激活后即全量抓取。
         TrafficCaptureController.shared.arm()
 
-        // L5.1/L6.1a 重做：长连接适配器 registry（纯注册制）。无服务器启动
+        // 长连接适配器 registry（纯注册制）。无服务器启动
         // 同样安装——保证扫码连接建立前创建的框架 socket 即被代理。
         LongConnHookEngine.shared.installAllIfNeeded()
         setConnectionState(.unconfigured)
@@ -286,12 +286,12 @@ final class ConnectionController: @unchecked Sendable {
             await MockRuleController.shared.syncIfNeeded(
                 client: client, app: appID, did: did,
                 serverVersion: resp.rulesVersion ?? 0)
-            // 能力线 L7：按服务端 pushRulesVersion 增量拉取 push mock 规则快照
+            // 按服务端 pushRulesVersion 增量拉取 push mock 规则快照
             // （fail-open；老服务端不下发该字段 → 按 0 处理，SDK 不拉取）。
             await PushMockRuleController.shared.syncIfNeeded(
                 client: client, app: appID, did: did,
                 serverVersion: resp.pushRulesVersion ?? 0)
-            // 能力线 L7 模拟推送：心跳响应携带的 pending 指令 → 构造假 Packet
+            // 模拟推送：心跳响应携带的 pending 指令 → 构造假 Packet
             // 注入当前活跃长连接 → ack 回报（无指令时 no-op）。
             await PushMockRuleController.shared.injectPendingCommands(
                 client: client, app: appID, did: did,

@@ -9,7 +9,7 @@ import os
 ///   （会话结束本地未上传的临时记录一并丢弃，与服务端"临时记录随会话清空"一致）。
 /// - 攒批上传：按条数阈值（200）/字节阈值（8MB）/定时（2s）触发，
 ///   单批 ≤500 条（契约）；上传失败直接丢弃批次、不重传（需求 ）。
-/// - 全局注册/注销 `MockNetPackURLProtocol`（决策 D-）。
+/// - 全局注册/注销 `MockNetPackURLProtocol`。
 final class TrafficCaptureController: @unchecked Sendable {
 
     /// 进程内共享实例。
@@ -29,11 +29,11 @@ final class TrafficCaptureController: @unchecked Sendable {
     /// 单批字节阈值（避免超服务端 10MB 请求体上限）。
     let maxBatchBytes = 8 * 1024 * 1024
 
-    // MARK: - 长连接阈值（能力线 L1；独立额度，不占用 HTTP 流量额度）
+    // MARK: - 长连接阈值（独立额度，不占用 HTTP 流量额度）
 
     /// 长连接独立额度（默认 1000 条，可注入便于测试）；超限丢最旧（rolling window）。
     var maxLongConnEntries = 1000
-    /// 长连接 payload 完整保留上限（10KB，决策 #2）；超限仅存预览。
+    /// 长连接 payload 完整保留上限（10KB）；超限仅存预览。
     let maxLongConnPayloadBytes = 10 * 1024
     /// 长连接 payload 预览上限（1KB，残留小项默认值）。
     let maxLongConnPreviewBytes = 1024
@@ -41,7 +41,7 @@ final class TrafficCaptureController: @unchecked Sendable {
     let maxLongConnBatchCount = 200
     /// 长连接单批字节阈值（避免超服务端 10MB 请求体上限）。
     let maxLongConnBatchBytes = 8 * 1024 * 1024
-    /// snapshot 30s 兜底（决策 #3）：距上次 snapshot 上报超过该时长且存在缓存
+    /// snapshot 30s 兜底：距上次 snapshot 上报超过该时长且存在缓存
     /// 快照时，随下一批次补发一条（状态变化立即上报由业务侧注入保证）。
     /// var 可注入便于单测（默认 30s）。
     var longConnSnapshotFallbackInterval: TimeInterval = 30
@@ -50,7 +50,7 @@ final class TrafficCaptureController: @unchecked Sendable {
 
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "com.mocknetpack.capture", qos: .utility)
-    /// L4：长连接 raw packet 解码专用串行队列（保证多包顺序与收包一致，不阻塞 socket 接收线程）。
+    /// 长连接 raw packet 解码专用串行队列（保证多包顺序与收包一致，不阻塞 socket 接收线程）。
     private let decodeQueue = DispatchQueue(label: "com.mocknetpack.longconn.decode", qos: .utility)
 
     private var running = false
@@ -64,7 +64,7 @@ final class TrafficCaptureController: @unchecked Sendable {
     private var serverURLValue: URL?
     private var logHandler: (@Sendable (String) -> Void)?
 
-    // MARK: - 长连接状态（能力线 L1；与 HTTP 流量缓冲互不干扰）
+    // MARK: - 长连接状态（与 HTTP 流量缓冲互不干扰）
 
     /// 长连接待上传缓冲（独立于 traffic pending；独立额度、独立上报端点）。
     private var longConnPending: [LongConnectionRecordInput] = []
@@ -76,10 +76,10 @@ final class TrafficCaptureController: @unchecked Sendable {
     /// 最近一次 snapshot 上报时间（兜底判定；nil = 从未上报）。
     private var longConnLastSnapshotAt: Date?
 
-    // MARK: - 长连接双路径去重（L5.5）
+    // MARK: - 长连接双路径去重
 
     /// 注入/代理双路径去重窗口表（key = "\(channelId)|\(msgId)" → 最近入队时间）。
-    /// 注入模式（L4 业务桥接）与代理模式（L5 自动采集）并存时，同一通道同一包会在
+    /// 注入模式（业务桥接）与代理模式（自动采集）并存时，同一通道同一包会在
     /// 毫秒级内各上报一次：窗口内重复直接丢弃；窗口外重复（服务端真实重发）保持
     /// 代理层 duplicate 标记语义不受影响（由适配器模块的采集记录器判定 duplicateIDs）。
     /// 不绑定会话生命周期——socket 重连时代理层会重置其 duplicateIDs，本窗口表仅按
@@ -361,7 +361,7 @@ final class TrafficCaptureController: @unchecked Sendable {
         }
     }
 
-    // MARK: - 长连接采集（能力线 L1；L2.1 实现）
+    // MARK: - 长连接采集
 
     /// 长连接采集开关（默认开；关闭后仅丢弃、不影响业务侧打点）。
     var longConnectionCaptureEnabled: Bool {
@@ -370,12 +370,12 @@ final class TrafficCaptureController: @unchecked Sendable {
     }
 
     /// 注入一条长连接记录（业务侧桥接层调用；线程安全）。
-    /// 语义（决策 #2/#3/#4）：独立缓冲与独立额度（默认 1000 条，超限丢最旧，
+    /// 语义：独立缓冲与独立额度（默认 1000 条，超限丢最旧，
     /// 不占用 HTTP 流量额度）；payload 完整保留 ≤10KB、超限仅存预览 ≤1KB；
     /// snapshot 事件立即入队并缓存为 30s 兜底补发源；心跳等事件不逐条合并，
     /// 随 snapshot 周期性可见。仅 capturing 且开关开启时入队。
     func recordLongConnection(_ record: LongConnectionRecordInput) {
-        // L4：该通道注册了编解码器、且本次只有 raw（无 payloadText）→ 后台串行解码后入队。
+        // 该通道注册了编解码器、且本次只有 raw（无 payloadText）→ 后台串行解码后入队。
         // 串行队列保证多包顺序与原 socket 收包顺序一致；解不出则保留 base64 降级。
         if record.eventType == .packet,
            record.payloadText == nil,
@@ -410,7 +410,7 @@ final class TrafficCaptureController: @unchecked Sendable {
         lock.lock()
         guard running, capturingValue, longConnEnabledValue else { lock.unlock(); return }
         var r = record
-        // L5.5：双路径去重（注入+代理并存时同一包不重复上报）。仅 packet 事件
+        // 双路径去重（注入+代理并存时同一包不重复上报）。仅 packet 事件
         // （msgId 非空）参与；顺带清理窗口过期条目（表不绑定会话生命周期）。
         if r.eventType == .packet, let msgId = r.msgId {
             let key = r.channelId + "|" + msgId
@@ -448,7 +448,7 @@ final class TrafficCaptureController: @unchecked Sendable {
         }
     }
 
-    /// payload 截断（决策 #2）：完整保留 ≤10KB；超限仅存预览（≤1KB），
+    /// payload 截断：完整保留 ≤10KB；超限仅存预览（≤1KB），
     /// 原 payload 字段清空。text 优先（三选一），base64 按长度估算字节。
     private func truncateLongConnPayload(_ r: inout LongConnectionRecordInput) {
         if let text = r.payloadText, text.utf8.count > maxLongConnPayloadBytes {

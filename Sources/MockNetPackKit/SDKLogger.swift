@@ -2,7 +2,7 @@ import Foundation
 import OSLog
 
 /// SDK 内部日志入口（iOS 13 兼容）。
-/// L6.1a 重做：长连接接入模块沿用主 SDK 统一日志出口（category 一致
+/// 长连接接入模块沿用主 SDK 统一日志出口（category 一致
 /// 可观测）→ 公开。
 ///
 /// `Logger` 与 OSLog 插值（privacy）仅 iOS 14+ 可用，而 SDK 最低部署

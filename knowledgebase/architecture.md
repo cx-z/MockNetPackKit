@@ -47,7 +47,7 @@ The SDK is a small set of **singletons with lock-protected state**, orchestrated
 | `DIDStore` | enum | did generation (UUID) + per-app `UserDefaults` persistence |
 | `ServerAddressStore` | enum |  server-address persistence (`mocknetpack.server.v1.<appID>`, same pattern as `DIDStore`) — saved by scan, read by `start()` for direct connect |
 | `QRConnectParser` | enum |  parses `mocknetpack://connect?v=1&u=<base64url>&a=<appID>&t=<token>` (scheme/version/http(s)+host/appID match/token); `QRConnectPayload` |
-| `QRScannerViewController` | class (UIViewController, iOS-only) | native AVCaptureSession QR scan, camera permission (denied/unavailable), `QRScanProviding` protocol seam for test injection — **v1.4: `finish()` dismiss happens first + `dismissIfPresented()` fallback (called by `connectByScan` when the scan flow ends, so the panel is never left silently open)**; the host Debug build needs `NSCameraUsageDescription` + `NSLocalNetworkUsageDescription` (iOS 14+ requires authorization to reach the LAN; both are Debug-only injections, absent from Release, v1.2) |
+| `QRScannerViewController` | class (UIViewController, iOS-only) | native AVCaptureSession QR scan, camera permission (denied/unavailable), `QRScanProviding` protocol seam for test injection — `finish()` dismiss happens first + `dismissIfPresented()` fallback (called by `connectByScan` when the scan flow ends, so the panel is never left silently open); the host Debug build needs `NSCameraUsageDescription` + `NSLocalNetworkUsageDescription` (iOS 14+ requires authorization to reach the LAN; both are Debug-only injections, absent from Release) |
 | `BinaryCodec` | Data extension | Standard gzip compression (zlib) used by the encrypt path |
 
 ## Concurrency model
@@ -78,10 +78,10 @@ MockNetPackKit.start(server:)
           404 → unregistered = true, stop loop (no retry)
           err → offline; exponential backoff 1s→30s; scheduleNext(delay: backoff)
 
-(v0.13.0): the server's TrafficEntry gains `seq` (a per-session arrival sequence number acting as an incremental cursor),
+The server's TrafficEntry carries `seq` (a per-session arrival sequence number acting as an incremental cursor),
 stamped by the server in arrival order during UploadTraffic — the SDK does not carry, see, or consume it;
 it is used by the Web/MCP/CLI query side; the SDK contract (register/heartbeat/upload/mock-rules pull) is unchanged.
-(v0.13.0): hit traffic additionally reports matchedRuleId — MockRuleController.match
+Hit traffic additionally reports matchedRuleId — MockRuleController.match
 writes the matched rule's ID into MockResponse.ruleId, and serve records it into TrafficEntry.matchedRuleId;
 it is non-empty only when mocked=true; Web display and replay semantics are unchanged.
 ```
@@ -147,9 +147,9 @@ Debug page → MockNetPackKit.connectByScan(from:completion:)
   → QRScannerViewController (AVCaptureSession; cameraDenied/unavailable → error)
   → QRConnectParser.parse(raw, expectedAppID: bundleID)
        appID mismatch → .appMismatch; bad payload → .invalidPayload
-  → register POST /devices/register {app, did, pairingToken}   // D1: token auto-register
+  → register POST /devices/register {app, did, pairingToken}   // token auto-register
        403 → .tokenInvalid (QR expired, refresh); other errors → .unreachable
-  → success: ConnectionController.stop()            // D6: switch, old server left to expire
+  → success: ConnectionController.stop()            // switch, old server left to expire
       ServerAddressStore.save(newURL)
       ConnectionController.start(server: newURL, …) // direct connect now (A2)
 Failure: saved address untouched (R1.6)

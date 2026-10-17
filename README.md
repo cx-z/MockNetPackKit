@@ -135,8 +135,8 @@ Module documentation is in [knowledgebase/overview.md](knowledgebase/overview.md
 
 ## Long-connection adapters (registration-only)
 
-Long-connection capture and push mock are **adapter-based and registration-only**
-(decision D-L6.4, 2026-10-15): the SDK auto-registers **no** framework adapter.
+Long-connection capture and push mock are **adapter-based and registration-only**:
+the SDK auto-registers **no** framework adapter.
 An adapter probes the host process for a specific framework class
 (`NSClassFromString`), installs a zero-intrusion proxy when the class is loaded,
 and reports every long-connection event with an **adapter id** (shown in the Web
@@ -180,8 +180,8 @@ Without registration the long-connection capability stays silently disabled
   captures independently (channel id distinguishes the sources); probing order
   follows registration order.
 - **Graceful fallback**: a registered adapter whose framework class is not
-  loaded is skipped silently (L6.1b).
-- **Push mock**: the XCPush adapter, once installed (Debug), also mounts the L7
+  loaded is skipped silently.
+- **Push mock**: the XCPush adapter, once installed (Debug), also mounts the
   push-mock injector (`PushMockInjecting`) — no extra host wiring.
 
 ### Writing an adapter

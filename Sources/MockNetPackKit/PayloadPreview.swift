@@ -2,7 +2,7 @@
 //  PayloadPreview.swift
 //  MockNetPackKit
 //
-//  L6.5d：长连接 payload 通用解码链（公开工具）。
+//  长连接 payload 通用解码链（公开工具）。
 //
 //  背景：各业务方接入长连接 hook 时，「包体 Data → Web 可读文本」有一套
 //  通用样板（gzip 嗅探解压 → JSON 美化 → UTF-8 原文 → 字节数兜底），此前

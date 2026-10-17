@@ -1,7 +1,7 @@
 import Foundation
 
 // ============================================================================
-// MockNetPackKit 连接层模型（与 server/openapi/mocknetpack.yaml v0.1.0 对齐）
+// MockNetPackKit 连接层模型（与 server/openapi/mocknetpack.yaml 对齐）
 // ============================================================================
 
 /// 设备连接状态（SDK 侧视角；服务端另有 derived offline 判定）。
@@ -23,7 +23,7 @@ public enum ConnectionState: Sendable, Equatable {
 public enum SessionState: Sendable, Equatable {
     /// 待命：无激活会话。
     case idle
-    /// 抓包中：服务端存在激活会话，SDK 应采集/执行 Mock（/ 起）。
+    /// 抓包中：服务端存在激活会话，SDK 应采集/执行 Mock。
     case capturing
 }
 
@@ -40,9 +40,9 @@ struct HeartbeatResponse: Codable {
     let serverConfig: ServerConfig
     let session: CaptureSession?
     let rulesVersion: Int?
-    /// push mock 规则版本（能力线 L7）；老服务端不下发 → nil，按 0 处理。
+    /// push mock 规则版本；老服务端不下发 → nil，按 0 处理。
     let pushRulesVersion: Int?
-    /// pending「模拟推送」指令（能力线 L7 模拟推送形态；无指令时省略 → nil）。
+    /// pending「模拟推送」指令（模拟推送形态；无指令时省略 → nil）。
     let pushCommands: [PushRuleCommand]?
 }
 
@@ -65,7 +65,7 @@ struct HeartbeatRequest: Encodable {
     let sdkVersion: String
 }
 
-/// 设备注册请求（契约 RegisterDeviceRequest；/v0.8.0 增可选 pairingToken/deviceName）。
+/// 设备注册请求（契约 RegisterDeviceRequest；可选 pairingToken/deviceName）。
 struct RegisterDeviceRequest: Encodable {
     let app: String
     let did: String
@@ -73,7 +73,7 @@ struct RegisterDeviceRequest: Encodable {
     let osVersion: String
     let sdkVersion: String
     let appVersion: String
-    /// App 显示名（v0.9.0）：读宿主 CFBundleDisplayName（如 IntegratingApp）；可选，Web 显示回退 bundle id。
+    /// App 显示名：读宿主 CFBundleDisplayName（如 IntegratingApp）；可选，Web 显示回退 bundle id。
     let appName: String?
     /// 扫码配对令牌：来自二维码；有效时未知 (app, did) 自动注册，已存在则复用。
     /// nil 时省略字段，服务端保持  语义（未知设备 404）。
@@ -98,11 +98,11 @@ struct DeviceView: Decodable {
 }
 
 // ============================================================================
-// Traffic 模型（与 server/openapi/mocknetpack.yaml v0.2.0 对齐）
+// Traffic 模型（与 server/openapi/mocknetpack.yaml 对齐）
 // ============================================================================
 
 /// 一条 HTTP 请求/响应的完整信息（契约 TrafficEntry）。
-/// id / sessionId 由服务端生成，SDK 不携带；mocked 由服务端默认 false（ 起标记）。
+/// id / sessionId 由服务端生成，SDK 不携带；mocked 由服务端默认 false。
 struct TrafficEntry: Encodable {
     /// 请求发起时间（RFC3339）。
     var timestamp: Date
@@ -128,10 +128,10 @@ struct TrafficEntry: Encodable {
     /// 错误信息；成功时为 nil。
     var error: String?
     var durationMs: Int
-    /// 命中 Mock 规则回包时为 true（契约 v0.3.0；服务端在 Web 请求流标注
+    /// 命中 Mock 规则回包时为 true（服务端在 Web 请求流标注
     /// “Mock 命中”）。走真实网络时为 false。
     var mocked: Bool = false
-    /// 命中的规则 ID（ P1-1）：仅 mocked=true 时非空，用于确认请求究竟
+    /// 命中的规则 ID：仅 mocked=true 时非空，用于确认请求究竟
     /// 命中哪一条规则；真实流量为 nil。
     var matchedRuleId: String?
 }
@@ -151,7 +151,7 @@ struct TrafficUploadResponse: Decodable {
 }
 
 // ============================================================================
-// Mock 规则模型（与 server/openapi/mocknetpack.yaml v0.3.0 对齐）
+// Mock 规则模型（与 server/openapi/mocknetpack.yaml 对齐）
 // ============================================================================
 
 /// Mock 回包（契约 MockResponse）。
@@ -186,11 +186,11 @@ struct MockRuleList: Decodable {
 }
 
 // ============================================================================
-// Push mock 规则模型（能力线 L7，与 server/openapi/mocknetpack.yaml 对齐）
+// Push mock 规则模型（与 server/openapi/mocknetpack.yaml 对齐）
 // ============================================================================
 
 /// push 匹配条件（契约 PushMockMatch）。服务端全字段 omitempty，SDK 侧全
-/// optional；实时拦截按「最多 1 条 JSONPath + 1 个子串」轻量子集执行（决策 D1）。
+/// optional；实时拦截按「最多 1 条 JSONPath + 1 个子串」轻量子集执行。
 struct PushMockMatch: Decodable, Equatable {
     let jsonPath: String?
     let jsonPathOp: String?
@@ -211,8 +211,7 @@ struct PushMockRule: Decodable, Equatable {
     let channelId: String
     /// 业务消息类型（契约可选：yaml 非 required；空 = 规则不限定 bizType）。
     /// 与 yaml 对齐为 Optional：服务端对空 bizType 的规则恒输出 bizType 字段
-    /// （2026-10-16 线上事故同构修复——指令/规则非 Optional 缺字段 decode 失败，
-    /// 整批拉取失败；SDK 端两处均已对齐 Optional）。
+    /// （指令/规则非 Optional 缺字段 decode 失败、整批拉取失败；SDK 端均已对齐 Optional）。
     let bizType: String?
     let match: PushMockMatch
     /// 替换 payload 文本（JSON 字符串）；存在时使用。
@@ -233,15 +232,14 @@ struct PushMockRuleList: Decodable {
 
 /// 一条「模拟推送」pending 指令（契约 PushRuleCommandView，SDK 线）：
 /// 心跳响应携带；SDK 注入后经 push-rule-commands/ack 回报消费。
-/// L6.5b：经 PushMockInjecting 协议（一步注入）消费本类型 → 公开。
+/// 经 PushMockInjecting 协议（一步注入）消费本类型 → 公开。
 public struct PushRuleCommand: Codable, Equatable {
     public let id: String
     public let ruleId: String
     public let channelId: String
     /// 业务消息类型（契约可选：yaml 非 required；空 = 规则不限定 bizType）。
     /// 与 yaml 对齐为 Optional：服务端对空 bizType 的指令可省略该字段
-    /// （2026-10-16 线上事故根因——非 Optional 导致缺字段 decode 失败、
-    /// 心跳整体失败、指令永不消费；服务端已同步恒输出 bizType 字段）。
+    /// （非 Optional 缺字段 decode 失败、心跳整体失败、指令永不消费；服务端恒输出 bizType 字段）。
     public let bizType: String?
     /// 替换 payload 文本（与 payloadBase64 二选一）。
     public let payload: String?
