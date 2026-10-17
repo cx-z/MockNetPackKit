@@ -79,6 +79,49 @@ final class PushMockRuleTests: XCTestCase {
         XCTAssertNil(list.rules[0].match.keyword)
     }
 
+    /// 规则列表 bizType 字段缺失（旧服务端 omitempty）→ decode 不失败、bizType
+    /// 为 nil。回归：2026-10-16 线上事故同构——PushMockRule.bizType 曾为非
+    /// Optional String，缺字段令整批规则列表 decode 失败（keyNotFound）。
+    func testDecodesRuleWithoutBizType() throws {
+        let json = """
+        {"version":1,"rules":[
+          {"id":"R","channelId":"xcpush_tcp",
+           "match":{},"replacePayload":"{}","enabled":true,"effective":true}
+        ]}
+        """
+        let list = try JSONDecoder().decode(PushMockRuleList.self, from: Data(json.utf8))
+        XCTAssertNil(list.rules[0].bizType, "缺省 bizType 应解码为 nil（契约非 required）")
+    }
+
+    // MARK: - PushRuleCommand 指令解码（心跳响应 pushCommands 线格式）
+
+    /// bizType 字段缺失（空 bizType 规则 + 服务端 omitempty）→ decode 不失败、
+    /// bizType 为 nil。回归：2026-10-16 线上事故——该字段曾为非 Optional String，
+    /// 缺字段令整个心跳响应 decode 失败（keyNotFound），指令永不消费。
+    func testDecodesCommandWithoutBizType() throws {
+        let json = """
+        {"id":"CMD1","ruleId":"RULE1","channelId":"xcpush_tcp",
+         "payload":"{\\"content\\":\\"hi\\"}"}
+        """
+        let cmd = try JSONDecoder().decode(PushRuleCommand.self, from: Data(json.utf8))
+        XCTAssertEqual(cmd.id, "CMD1")
+        XCTAssertEqual(cmd.ruleId, "RULE1")
+        XCTAssertEqual(cmd.channelId, "xcpush_tcp")
+        XCTAssertNil(cmd.bizType, "缺省 bizType 应解码为 nil（契约非 required）")
+        XCTAssertEqual(cmd.payload, "{\"content\":\"hi\"}")
+        XCTAssertNil(cmd.payloadBase64)
+    }
+
+    /// 显式空串 bizType（服务端修复后恒输出字段）→ bizType == ""（非 nil）。
+    func testDecodesCommandWithEmptyBizType() throws {
+        let json = """
+        {"id":"CMD1","ruleId":"RULE1","channelId":"xcpush_tcp","bizType":"",
+         "payload":"{}"}
+        """
+        let cmd = try JSONDecoder().decode(PushRuleCommand.self, from: Data(json.utf8))
+        XCTAssertEqual(cmd.bizType, "", "显式空串保持空串")
+    }
+
     // MARK: - activeRules 过滤（channelId 必选 + bizType 可选 + effective）
 
     func testActiveRulesFiltering() {

@@ -567,7 +567,7 @@ final class LongConnHookInjector: PushMockInjecting {
         let ok = inject(command, context)
         if ok {
             LongConnHookEngine.shared.noteInjection(ruleId: command.ruleId,
-                                                    bizType: command.bizType)
+                                                    bizType: command.bizType ?? "")
         }
         return ok
     }

@@ -140,7 +140,7 @@ public final class PushMockRuleController: @unchecked Sendable {
         defer { lock.unlock() }
         return rules.filter { rule in
             rule.effective && rule.channelId == channelId &&
-                (rule.bizType.isEmpty || rule.bizType == bizType)
+                (rule.bizType == nil || rule.bizType!.isEmpty || rule.bizType == bizType)
         }
     }
 

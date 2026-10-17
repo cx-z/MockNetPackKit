@@ -209,7 +209,11 @@ enum PushMatchOp {
 struct PushMockRule: Decodable, Equatable {
     let id: String
     let channelId: String
-    let bizType: String
+    /// 业务消息类型（契约可选：yaml 非 required；空 = 规则不限定 bizType）。
+    /// 与 yaml 对齐为 Optional：服务端对空 bizType 的规则恒输出 bizType 字段
+    /// （2026-10-16 线上事故同构修复——指令/规则非 Optional 缺字段 decode 失败，
+    /// 整批拉取失败；SDK 端两处均已对齐 Optional）。
+    let bizType: String?
     let match: PushMockMatch
     /// 替换 payload 文本（JSON 字符串）；存在时使用。
     let replacePayload: String?
@@ -234,13 +238,17 @@ public struct PushRuleCommand: Codable, Equatable {
     public let id: String
     public let ruleId: String
     public let channelId: String
-    public let bizType: String
+    /// 业务消息类型（契约可选：yaml 非 required；空 = 规则不限定 bizType）。
+    /// 与 yaml 对齐为 Optional：服务端对空 bizType 的指令可省略该字段
+    /// （2026-10-16 线上事故根因——非 Optional 导致缺字段 decode 失败、
+    /// 心跳整体失败、指令永不消费；服务端已同步恒输出 bizType 字段）。
+    public let bizType: String?
     /// 替换 payload 文本（与 payloadBase64 二选一）。
     public let payload: String?
     /// 替换 payload 原始字节（base64）。
     public let payloadBase64: String?
 
-    public init(id: String, ruleId: String, channelId: String, bizType: String,
+    public init(id: String, ruleId: String, channelId: String, bizType: String?,
                 payload: String?, payloadBase64: String?) {
         self.id = id
         self.ruleId = ruleId
