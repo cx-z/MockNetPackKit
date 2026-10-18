@@ -72,7 +72,8 @@ final class ConnectionController: @unchecked Sendable {
 
     // MARK: - 生命周期
 
-    /// 启动连接层（幂等：已在运行则直接返回）。did 首次生成后持久化。
+    /// 同步安装 HTTP 启动暂存后再调度注册/心跳（幂等），保证首个心跳不会先于采集初始化。
+    /// did 首次生成后持久化。
     /// - Parameters:
     ///   - server: 服务器 base URL。
     ///   - pairingToken: 扫码配对令牌：随注册请求携带，服务端据此自动注册/复用设备。
@@ -108,16 +109,16 @@ final class ConnectionController: @unchecked Sendable {
         deviceNameValue = deviceName
         lock.unlock()
 
-        log("MockNetPackKit connecting to \(server.absoluteString) app=\(appID ?? "?") did=\(self.did ?? "?")")
-        setConnectionState(.connecting)
-        scheduleNext()
-
-        // ：启动流量采集（注册全局 URLProtocol；会话未激活时不拦截）。
+        // 必须先安装并开启有界暂存，再调度任何异步注册/心跳。
         TrafficCaptureController.shared.start(
             serverURL: server,
             appID: appID ?? "",
             did: self.did ?? "",
-            logHandler: self.logHandler)
+            logHandler: logHandler)
+
+        log("MockNetPackKit connecting to \(server.absoluteString) app=\(appID ?? "?") did=\(self.did ?? "?")")
+        setConnectionState(.connecting)
+        scheduleNext()
 
         // LongConnHook 通用声明式长连接接入层。
         // 安装业务方已注册的 hook 声明（采集 + 注入挂载）；SDK 不内置、
@@ -242,7 +243,7 @@ final class ConnectionController: @unchecked Sendable {
         _ = task
     }
 
-    /// 单轮：注册（若未注册）→ 心跳 → 处理结果并调度下一轮。
+    /// 单轮注册/心跳在发请求前绑定 HTTP 采集代次，拒绝结果只能取消该代启动暂存。
     private func performCycle(gen: Int) async {
         let info = withLock { () -> (running: Bool, serverURL: URL?, appID: String?, did: String?) in
             (isRunningValue, serverURL, appIDValue, didValue)
@@ -253,11 +254,13 @@ final class ConnectionController: @unchecked Sendable {
         }
 
         let client = makeClient(serverURL: serverURL)
+        let captureGeneration = TrafficCaptureController.shared.httpCaptureGeneration
 
         // 1) 需要注册：未注册过（或上次心跳 404 置为未注册）。
         let needRegister = withLock { !registered }
         if needRegister {
-            await performRegister(client: client, appID: appID, did: did, gen: gen)
+            await performRegister(client: client, appID: appID, did: did, gen: gen,
+                                  captureGeneration: captureGeneration)
             return  // performRegister 内已调度下一轮
         }
 
@@ -309,6 +312,7 @@ final class ConnectionController: @unchecked Sendable {
                     unregistered = true
                 }
                 setConnectionState(.offline)
+                TrafficCaptureController.shared.cancelStartupCapture(generation: captureGeneration)
                 log("heartbeat 404: device not registered; SDK idle (re-register in Web and restart App)")
                 finishCycle(gen: gen)
 
@@ -325,7 +329,9 @@ final class ConnectionController: @unchecked Sendable {
 
     // MARK: - 注册
 
-    private func performRegister(client: ConnectionClient, appID: String, did: String, gen: Int) async {
+    /// 注册后立即心跳；永久拒绝仅清除发起注册时绑定的启动暂存，临时失败保留暂存等待重试。
+    private func performRegister(client: ConnectionClient, appID: String, did: String, gen: Int,
+                                 captureGeneration: UInt64?) async {
         let meta = withLock { () -> (os: String, sdk: String, app: String, appName: String?, token: String?, deviceName: String?) in
             (osVersionValue, sdkVersionValue, appVersionValue ?? "", appNameValue, pairingTokenValue, deviceNameValue)
         }
@@ -370,6 +376,7 @@ final class ConnectionController: @unchecked Sendable {
                 unregistered = true
             }
             setConnectionState(.offline)
+            TrafficCaptureController.shared.cancelStartupCapture(generation: captureGeneration)
             log("register 404: device not registered on server; SDK idle (register the device in Web)")
             finishCycle(gen: gen)
             // 不 scheduleNext。
@@ -390,6 +397,7 @@ final class ConnectionController: @unchecked Sendable {
                         unregistered = true
                     }
                     setConnectionState(.tokenInvalid)
+                    TrafficCaptureController.shared.cancelStartupCapture(generation: captureGeneration)
                     log("register 403: pairing token invalid or expired; SDK idle (re-scan a fresh QR)")
                     finishCycle(gen: gen)
                     return  // 不 scheduleNext。

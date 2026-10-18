@@ -150,6 +150,7 @@ final class ConnectionControllerTests: XCTestCase {
         waitUntil { self.controller.sessionState == .idle }
     }
 
+    /// 首次心跳 404 后停循环并结束启动暂存，不继续接管业务 HTTP。
     func testHeartbeat404_StopsQuietly() {
         let failNextHeartbeat = Box(true)
         MockURLProtocol.handler = { request in
@@ -176,6 +177,7 @@ final class ConnectionControllerTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.5)
         XCTAssertEqual(registerCalls, frozenReg, "404 后不应再重新注册")
         XCTAssertEqual(heartbeatCalls, frozenHb, "404 后不应再心跳")
+        XCTAssertNil(TrafficCaptureController.shared.httpCaptureGeneration)
     }
 
     func testNetworkFailure_BackoffReconnects() {
@@ -329,8 +331,7 @@ final class ConnectionControllerTests: XCTestCase {
             "3s 不得被钳制抬成 5s（旧钳制下限 5 会让 gap≈5s；实测 \(gap)s）")
     }
 
-    // 4.13 回归：携带配对令牌注册收到 403（pairing_token_invalid）→ 停止循环并
-    // 上抛 .tokenInvalid（可展示「二维码已过期」），绝不退避重试同一枚过期令牌。
+    /// 配对令牌注册 403 后停循环、上抛 tokenInvalid，并清除 HTTP 启动暂存。
     func testRegister403_WithPairingToken_StopsAndSurfacesTokenInvalid() {
         MockURLProtocol.handler = { request in
             if request.url?.path.hasSuffix("/devices/register") == true {
@@ -351,6 +352,7 @@ final class ConnectionControllerTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.5)
         XCTAssertEqual(registerCalls, frozenReg, "403 后不应再重新注册")
         XCTAssertEqual(heartbeatCalls, frozenHb, "403 后不应再心跳")
+        XCTAssertNil(TrafficCaptureController.shared.httpCaptureGeneration)
     }
 
     // 4.13 对照：未携带配对令牌的 403 保持原有退避语义（不误伤其它 403 场景）。

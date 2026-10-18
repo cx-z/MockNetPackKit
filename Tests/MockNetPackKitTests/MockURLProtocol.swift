@@ -2,35 +2,76 @@ import Foundation
 
 /// 测试辅助：拦截 URLSession 请求，按预设 handler 返回响应。
 /// 使用方式：注入 `URLSessionConfiguration.ephemeral.protocolClasses = [MockURLProtocol.self]`。
-final class MockURLProtocol: URLProtocol {
+final class MockURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let stateLock = NSLock()
+    nonisolated(unsafe) private static var handlerValue: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
+    nonisolated(unsafe) private static var deferredHandlerValue: (@Sendable (MockURLProtocol) -> Bool)?
+    nonisolated(unsafe) private static var requestsValue: [URLRequest] = []
+    private let completionLock = NSLock()
+    private var finished = false
 
     /// 全局 handler：由测试设置，返回 (HTTPURLResponse, Data) 或抛错（模拟网络失败）。
-    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
+    static var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return handlerValue }
+        set { stateLock.lock(); defer { stateLock.unlock() }; handlerValue = newValue }
+    }
+
+    /// 可选异步响应入口：返回 true 表示测试持有请求，稍后通过 respond 回包，不阻塞加载线程。
+    static var deferredHandler: (@Sendable (MockURLProtocol) -> Bool)? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return deferredHandlerValue }
+        set { stateLock.lock(); defer { stateLock.unlock() }; deferredHandlerValue = newValue }
+    }
 
     /// 记录所有被拦截的请求（顺序），供断言。
-    nonisolated(unsafe) static var recordedRequests: [URLRequest] = []
+    static var recordedRequests: [URLRequest] {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return requestsValue }
+        set { stateLock.lock(); defer { stateLock.unlock() }; requestsValue = newValue }
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
+    /// 锁内记录请求并取得处理器快照；锁外执行测试闭包，允许并发上传或延迟首次心跳。
     override func startLoading() {
-        MockURLProtocol.recordedRequests.append(request)
-        guard let handler = MockURLProtocol.handler else {
-            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+        Self.stateLock.lock()
+        Self.requestsValue.append(request)
+        let handler = Self.handlerValue
+        let deferred = Self.deferredHandlerValue
+        Self.stateLock.unlock()
+        if deferred?(self) == true { return }
+        guard let handler else {
+            respond(.failure(URLError(.unsupportedURL)))
             return
         }
         do {
-            let (response, data) = try handler(request)
+            respond(.success(try handler(request)))
+        } catch {
+            respond(.failure(error))
+        }
+    }
+
+    /// 只交付一次响应；取消与异步释放心跳共享同一完成标记，回调在锁外执行。
+    func respond(_ result: Result<(HTTPURLResponse, Data), Error>) {
+        completionLock.lock()
+        guard !finished else { completionLock.unlock(); return }
+        finished = true
+        completionLock.unlock()
+        switch result {
+        case .success(let (response, data)):
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             client?.urlProtocolDidFinishLoading(self)
-        } catch {
+        case .failure(let error):
             client?.urlProtocol(self, didFailWithError: error)
         }
     }
 
-    override func stopLoading() {}
+    /// 取消后忽略测试稍后释放的延迟响应。
+    override func stopLoading() {
+        completionLock.lock(); defer { completionLock.unlock() }
+        finished = true
+    }
 }
 
 /// 构造 JSON 响应。

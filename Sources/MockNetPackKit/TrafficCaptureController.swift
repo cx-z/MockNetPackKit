@@ -5,7 +5,8 @@ import os
 ///
 /// 职责：
 /// - 跟随抓包会话启停：`updateSession(capturing:sessionID:)` 由连接层心跳结果
-///   驱动——capturing 时注册拦截生效并采集，idle 时停止并清空待上传批次
+///   驱动；首次心跳前有界暂存 HTTP 流量，有会话则上传，无会话则丢弃。
+///   capturing 时正常采集，idle 时停止并清空待上传批次
 ///   （会话结束本地未上传的临时记录一并丢弃，与服务端"临时记录随会话清空"一致）。
 /// - 攒批上传：按条数阈值（200）/字节阈值（8MB）/定时（2s）触发，
 ///   单批 ≤500 条（契约）；上传失败直接丢弃批次、不重传（需求 ）。
@@ -55,6 +56,10 @@ final class TrafficCaptureController: @unchecked Sendable {
 
     private var running = false
     private var capturingValue = false
+    /// 仅本次有服务器的启动握手期间暂存 HTTP；首次会话结果或终止注册后关闭。
+    private var startupBufferingValue = false
+    /// HTTP 请求所属采集代次；启动暂存晋升为首个会话时保留，其余会话切换作废。
+    private var httpGeneration: UInt64 = 0
     /// URLProtocol 注入是否已安装（arm/start 共用，锁保护）：启动早期已由 arm()
     /// 预注入时，start() 不再重复 install/registerClass，避免重复注册同一拦截器类。
     private var injectedValue = false
@@ -249,7 +254,7 @@ final class TrafficCaptureController: @unchecked Sendable {
 
     /// 安装 URLProtocol 注入（arm/start 共用；幂等，锁保护判定）：swizzle
     /// URLSessionConfiguration 类构造方法（默认/临时会话携带拦截器），并注册全局类
-    /// （NSURLConnection 时代兜底）。会话未激活时 canInit 返回 false。
+    /// （NSURLConnection 时代兜底）。是否接管由 HTTP 采集代次开关决定。
     private func ensureInjected() {
         lock.lock()
         guard !injectedValue else { lock.unlock(); return }
@@ -259,11 +264,13 @@ final class TrafficCaptureController: @unchecked Sendable {
         URLProtocol.registerClass(MockNetPackURLProtocol.self)
     }
 
-    /// 启动采集（连接层 start 时调用；幂等）。注册全局 URLProtocol。
+    /// 启动采集并注册 URLProtocol（幂等）；首次心跳前仅暂存 HTTP，不上传、不 Mock。
     func start(serverURL: URL, appID: String, did: String, logHandler: (@Sendable (String) -> Void)? = nil) {
         lock.lock()
         guard !running else { lock.unlock(); return }
         running = true
+        startupBufferingValue = true
+        httpGeneration &+= 1
         serverURLValue = serverURL
         appIDValue = appID
         didValue = did
@@ -288,6 +295,8 @@ final class TrafficCaptureController: @unchecked Sendable {
         guard running else { lock.unlock(); return }
         running = false
         capturingValue = false
+        startupBufferingValue = false
+        httpGeneration &+= 1
         sessionIDValue = nil
         pending = []
         pendingBytes = 0
@@ -306,24 +315,39 @@ final class TrafficCaptureController: @unchecked Sendable {
         log("traffic capture stopped")
     }
 
-    /// 会话状态更新（连接层心跳结果驱动）。
+    /// 消费心跳会话结果：首个有效会话在锁内取出启动批次，锁外上传，避免混入正常批次。
+    /// idle/会话切换清空并作废旧请求；首次激活保留在飞启动请求的代次。
     /// - Parameters:
     ///   - capturing: 服务端是否存在激活会话。
     ///   - sessionID: 激活会话 ID（capturing 时必传；idle 时传 nil）。
     func updateSession(capturing: Bool, sessionID: String?) {
+        var startupUpload: (request: TrafficUploadRequest, serverURL: URL)?
         lock.lock()
         guard running else { lock.unlock(); return }
+        let wasBuffering = startupBufferingValue
+        startupBufferingValue = false
         let changed = capturingValue != capturing || sessionIDValue != sessionID
         capturingValue = capturing
         sessionIDValue = sessionID
-        // 会话切换（开始/结束）才清空待上传批次：
-        // - 开始：上个会话的残留批次与新会话无关；
+        // 会话切换（开始/结束）清空待上传批次，首次启动暂存晋升除外：
+        // - 开始：只有首次心跳前的暂存可以归入该会话；
         // - 结束：临时记录随会话结束丢弃（与服务端清空语义一致）。
         // 值未变（心跳重复下发同一会话状态）时不清空——否则每次心跳都会丢掉
         // flush 定时器（2s）尚未触发的一整段已录流量。
-        if changed {
-            pending = []
-            pendingBytes = 0
+        if changed || wasBuffering {
+            // 只有首次心跳确认有会话，启动请求（含在飞请求）才属于该会话。
+            if wasBuffering && capturing {
+                if !pending.isEmpty, let sid = sessionID, let url = serverURLValue,
+                   let app = appIDValue, let did = didValue {
+                    startupUpload = (TrafficUploadRequest(app: app, did: did, sessionId: sid, entries: pending), url)
+                    pending = []
+                    pendingBytes = 0
+                }
+            } else {
+                pending = []
+                pendingBytes = 0
+                httpGeneration &+= 1
+            }
             longConnPending = []
             longConnPendingBytes = 0
             longConnLastSnapshot = nil
@@ -331,24 +355,56 @@ final class TrafficCaptureController: @unchecked Sendable {
         }
         lock.unlock()
 
-        guard changed else { return }
+        guard changed || wasBuffering else { return }
         log(capturing ? "capture session active (\(sessionID ?? "?"))" : "capture session idle; pending cleared")
+        if let upload = startupUpload {
+            uploadHTTP(upload.request, client: makeClient(serverURL: upload.serverURL))
+        }
         if capturing { flush() }
     }
 
-    /// 当前是否处于抓包中（URLProtocol.canInit 读取；锁保护）。
+    /// 服务端是否已确认有效会话（Mock 执行/长连接采集读取；不包含 HTTP 启动暂存）。
     var isCapturing: Bool {
         lock.lock(); defer { lock.unlock() }
         return running && capturingValue
     }
 
+    /// 当前可接管 HTTP 的代次；启动暂存不改变公开 capturing 状态或长连接采集开关。
+    var httpCaptureGeneration: UInt64? {
+        lock.lock(); defer { lock.unlock() }
+        guard running, capturingValue || startupBufferingValue else { return nil }
+        return httpGeneration
+    }
+
+    /// 拒绝结果只取消发起握手时绑定的启动代次；归属校验与清空在同一锁内，旧结果不影响重启。
+    func cancelStartupCapture(generation: UInt64?) {
+        lock.lock()
+        guard let generation, startupBufferingValue, generation == httpGeneration else { lock.unlock(); return }
+        startupBufferingValue = false
+        pending = []
+        pendingBytes = 0
+        httpGeneration &+= 1
+        lock.unlock()
+    }
+
     // MARK: - 采集与攒批
 
-    /// 记录一条完整请求/响应（由 MockNetPackURLProtocol 调用）。
-    func record(_ entry: TrafficEntry) {
+    /// 按请求代次记录 HTTP；启动暂存复用 200 条/8MB 上限，超限丢新条目，保留最早请求。
+    /// generation 由 URLProtocol 在创建时取得；省略仅供内部直接记录/测试使用。
+    func record(_ entry: TrafficEntry, generation: UInt64? = nil) {
         lock.lock()
-        guard running, capturingValue else { lock.unlock(); return }
-        let bytes = entry.requestBody.utf8.count + (entry.responseBody?.utf8.count ?? 0) + 256
+        guard running, capturingValue || startupBufferingValue,
+              generation == nil || generation == httpGeneration else { lock.unlock(); return }
+        let bytes: Int
+        if startupBufferingValue {
+            // 含 base64、解码文本和 headers 的完整序列化大小，避免只算正文导致暂存无界。
+            guard pending.count < maxBatchCount,
+                  let size = try? JSONEncoder().encode(entry).count,
+                  size <= maxBatchBytes - pendingBytes else { lock.unlock(); return }
+            bytes = size
+        } else {
+            bytes = entry.requestBody.utf8.count + (entry.responseBody?.utf8.count ?? 0) + 256
+        }
         pending.append(entry)
         pendingBytes += bytes
         let count = pending.count
@@ -473,7 +529,7 @@ final class TrafficCaptureController: @unchecked Sendable {
 
     /// 立即上传待上传批次（定时/阈值/会话激活时调用；无数据或无会话则 no-op）。
     /// HTTP 流量与长连接日志分通道取批、分别上传（互不干扰；长连接走
-    /// POST /sessions/{id}/longconn）。
+    /// POST /sessions/{id}/longconn）；HTTP 复用与启动批次相同的锁外上传方法。
     func flush() {
         let batch: [TrafficEntry]
         let longBatches: [String: [LongConnectionRecordInput]]
@@ -527,15 +583,7 @@ final class TrafficCaptureController: @unchecked Sendable {
         let client = makeClient(serverURL: serverURL)
         if !batch.isEmpty {
             let req = TrafficUploadRequest(app: appID, did: did, sessionId: sessionID, entries: batch)
-            Task { [weak self] in
-                do {
-                    let _: TrafficUploadResponse = try await client.post("traffic", body: req, as: TrafficUploadResponse.self)
-                    self?.log("uploaded \(batch.count) traffic entries")
-                } catch {
-                    // 需求 ：不做本地缓存、不重传；失败批次直接丢弃。
-                    self?.log("traffic upload failed: \(error.localizedDescription); batch dropped (no retry)")
-                }
-            }
+            uploadHTTP(req, client: client)
         }
         for (channelID, records) in longBatches {
             let req = LongConnUploadRequest(channelId: channelID, records: records)
@@ -552,6 +600,18 @@ final class TrafficCaptureController: @unchecked Sendable {
     }
 
     // MARK: - 辅助
+
+    /// 上传已脱离待上传队列、且已绑定设备/会话身份的 HTTP 批次；失败丢弃，不重试。
+    private func uploadHTTP(_ request: TrafficUploadRequest, client: ConnectionClient) {
+        Task { [weak self] in
+            do {
+                let _: TrafficUploadResponse = try await client.post("traffic", body: request, as: TrafficUploadResponse.self)
+                self?.log("uploaded \(request.entries.count) traffic entries")
+            } catch {
+                self?.log("traffic upload failed: \(error.localizedDescription); batch dropped (no retry)")
+            }
+        }
+    }
 
     private func scheduleFlush() {
         queue.asyncAfter(deadline: .now() + flushInterval) { [weak self] in

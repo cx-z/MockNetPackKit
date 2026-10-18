@@ -13,7 +13,7 @@ Use `server_address` as a placeholder for the deployed server's DNS name or IP a
 1. Call `start()` early during app startup, before creating business URLSession instances.
 2. Sign in to the Web console, select the app matching the Bundle ID, and generate a pairing QR code.
 3. Scan from the app's debug screen. The SDK registers or reuses the device, saves the server address, and connects. Later launches reconnect without scanning again.
-4. Activate the device's capture session in the Web console. Capture and mock execution begin only while the session is active.
+4. Activate the device's capture session in the Web console. Upload and mock execution require an active session. With a configured server, HTTP requests made before the first heartbeat are temporarily buffered to cover the cold-start handshake.
 5. Create and enable rules in the Web console. Matching requests receive local responses; unmatched requests reach the real business server.
 
 Rules are isolated by device and match **method + URL path**, ignoring the host, query string, and request body. A failed rule fetch retains the existing snapshot. Control-channel failures do not directly become business request errors; business network errors still propagate normally.
@@ -106,6 +106,7 @@ To return to an unconfigured state, call `stop()`, `resetServer()`, then `start(
 - Injection covers default / ephemeral URLSession configurations created after startup. It does not guarantee coverage of existing sessions, background URLSession, WKWebView, native sockets, or every third-party networking stack.
 - Recorded request and response bodies have a 1 MiB truncation limit. Capture is not a complete network-packet archive. Failed upload batches are dropped without retry.
 - SDK registration, heartbeat, upload, and other internal requests are excluded from recursive capture.
+- With a configured server, startup HTTP traffic is forwarded immediately and held in memory until the first heartbeat confirms the session. The buffer keeps the earliest completed entries, up to 200 entries / 8 MiB of encoded traffic. The first active session detaches that buffer atomically and uploads it separately from subsequent completions. An idle response or `stop()` discards it; terminal registration/heartbeat rejection can discard only the startup generation that initiated the request. Late responses from a discarded capture generation are also excluded. This buffer is not persisted and does not retry failed uploads; unconfigured startup remains non-capturing.
 - Binary replay uses this order: original `bodyBase64` bytes, edited text encoded by a registered codec, then UTF-8 text. The SDK can gzip before encryption; the host supplies decryption and corresponding decompression.
 - Provide `requestDecrypt` and `responseDecrypt` separately when needed. Without a request decoder, the SDK does not substitute the response decoder.
 

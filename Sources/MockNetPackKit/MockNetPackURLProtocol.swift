@@ -4,8 +4,7 @@ import Foundation
 ///
 /// 工作机制：
 /// - 由 `TrafficCaptureController.start` 全局注册（URLProtocol.registerClass），
-///   `stop` 注销；是否拦截由静态捕获开关（跟随会话状态）决定，会话未激活时
-///   `canInit` 返回 false，对业务零干预（fail-open）。
+///   `stop` 注销；首次心跳前仅转发并有界暂存，已确认 idle 时不接管。
 /// - 拦截的请求由本类转发到真实网络（转发 session 排除本类，避免递归），
 ///   完成后组装 `TrafficEntry` 交给 `TrafficCaptureController` 攒批上传。
 /// - SDK 自身请求（注册/心跳/上传）带 `skipHeader`，`canInit` 直接放行。
@@ -31,8 +30,9 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
 
     // MARK: - URLProtocol
 
+    /// 仅接管启动握手或有效会话中的 HTTP，SDK 自身请求始终放行。
     override class func canInit(with request: URLRequest) -> Bool {
-        guard TrafficCaptureController.shared.isCapturing else { return false }
+        guard TrafficCaptureController.shared.httpCaptureGeneration != nil else { return false }
         guard let scheme = request.url?.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
             return false
         }
@@ -54,6 +54,8 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     /// 且 stream 在 startLoading 前已被 URLSession 预读过一次（算 Content-Length），
     /// 到 startLoading 时再读就是空的；必须在 init 时抢读。
     private var capturedBody: Data?
+    /// 请求创建时绑定的采集代次；idle/stop/会话切换后到达的回包不能混入新会话。
+    private let captureGeneration: UInt64?
 
     private static func sharedSession() -> URLSession {
         sessionLock.lock()
@@ -65,7 +67,9 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         return s
     }
 
+    /// 绑定采集代次并在系统预读前保存请求体；之后的会话变更只影响记录，不中断业务转发。
     override init(request: URLRequest, cachedResponse: CachedURLResponse?, client: URLProtocolClient?) {
+        self.captureGeneration = TrafficCaptureController.shared.httpCaptureGeneration
         //  修复：在 init 阶段就读 stream，此时 stream 还未被 URLSession 预读。
         var rq = request
         let body = Self.readBody(of: request, rewriting: &rq)
@@ -73,13 +77,15 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         super.init(request: rq, cachedResponse: cachedResponse, client: client)
     }
 
+    /// 有效会话内尝试 Mock，否则立即转发真实请求；启动握手不等待平台、不应用旧规则。
     override func startLoading() {
         startTime = Date()
 
         // ：先查本地 Mock 快照。命中则直接合成回包，不转发真实网络。
         let method = request.httpMethod ?? "GET"
         let path = request.url?.path ?? ""
-        if let mock = MockRuleController.shared.match(method: method, path: path) {
+        if TrafficCaptureController.shared.isCapturing,
+           let mock = MockRuleController.shared.match(method: method, path: path) {
             serve(mock: mock, method: method, path: path)
             return
         }
@@ -124,7 +130,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     // MARK: - Mock 回包
 
     /// 命中本地 Mock 规则：合成 HTTP 响应直接回给原请求者，不转发真实网络，
-    /// 同时记一条 mocked=true 的临时流量（会话结束随临时流量清空）。
+    /// 同时按请求代次记一条 mocked=true 的临时流量（会话结束随临时流量清空）。
     private func serve(mock: MockResponse, method: String, path: String) {
         let url = request.url ?? URL(string: "http://localhost/")!
         var headerFields = mock.headers ?? [:]
@@ -195,7 +201,9 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         if !data.isEmpty {
             entry.responseBodyDecoded = Self.decodedBody(data, contentType: contentType)
         }
-        TrafficCaptureController.shared.record(entry)
+        if let captureGeneration {
+            TrafficCaptureController.shared.record(entry, generation: captureGeneration)
+        }
 
         guard let response else {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
@@ -210,7 +218,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
 
     // MARK: - 采集
 
-    /// 组装 TrafficEntry 并交给采集器（攒批/上传）。
+    /// 组装 TrafficEntry 并按请求创建时的代次交给采集器，拒绝跨会话的迟到回包。
     private func record(bodyData: Data?, data: Data?, response: URLResponse?, error: Error?) {
         let durationMs = max(0, Int(Date().timeIntervalSince(startTime) * 1000))
         let http = response as? HTTPURLResponse
@@ -252,7 +260,9 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         if let bodyData, !bodyData.isEmpty {
             entry.requestBodyDecoded = Self.decodedBody(bodyData, contentType: request.value(forHTTPHeaderField: "Content-Type"), isRequest: true)
         }
-        TrafficCaptureController.shared.record(entry)
+        if let captureGeneration {
+            TrafficCaptureController.shared.record(entry, generation: captureGeneration)
+        }
     }
 
     // MARK: - 辅助
