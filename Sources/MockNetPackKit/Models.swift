@@ -233,7 +233,7 @@ struct PushMockRuleList: Decodable {
 /// 一条「模拟推送」pending 指令（契约 PushRuleCommandView，SDK 线）：
 /// 心跳响应携带；SDK 注入后经 push-rule-commands/ack 回报消费。
 /// 经 PushMockInjecting 协议（一步注入）消费本类型 → 公开。
-public struct PushRuleCommand: Codable, Equatable {
+public struct PushRuleCommand: Codable, Equatable, Sendable {
     public let id: String
     public let ruleId: String
     public let channelId: String

@@ -19,7 +19,7 @@
 import Foundation
 
 /// push mock 注入能力（框架特定实现，由接入方/声明闭包提供；模拟推送）。
-public protocol PushMockInjecting: AnyObject {
+public protocol PushMockInjecting: AnyObject, Sendable {
 
     /// 由 pending 指令构造假消息并投递到当前活跃长连接（一步完成）；
     /// 构造失败 / 无活跃连接 → false（指令保留待下次心跳重试）。

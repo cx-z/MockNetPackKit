@@ -98,11 +98,18 @@ public final class PushMockRuleController: @unchecked Sendable {
         }
         var acked: [String] = []
         for command in commands {
-            // 注入态（线程本地）：注入闭包内（同步）触发的 hook 采集将
-            // packet 记录标 mocked/mockRuleId（Web fake 徽标）。
-            LongConnHookEngine.shared.beginInjection(command.ruleId)
-            let injected = injector.inject(command: command)
-            LongConnHookEngine.shared.endInjection()
+            // 注入必须在主队列执行：真实长连接回调（asyncSocket_didRead）由
+            // GCDAsyncSocket 在 delegate queue（默认主队列）上调，Dokimo 的
+            // Realm/UI 操作假设运行在那个线程。在 ConnectionController 后台
+            // queue 上同步调 injector 会把消息处理搬到错误线程，触发
+            // RLMException: Realm accessed from incorrect thread。
+            let ruleId = command.ruleId
+            var injected = false
+            await MainActor.run {
+                LongConnHookEngine.shared.beginInjection(ruleId)
+                injected = injector.inject(command: command)
+                LongConnHookEngine.shared.endInjection()
+            }
             guard injected else {
                 // 无活跃连接 / 构造失败：保留指令，下次心跳重试。
                 SDKLog.error("push mock inject skipped command=\(command.id), retry next heartbeat", category: "mock")
