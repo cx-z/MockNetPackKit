@@ -56,6 +56,8 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     private var capturedBody: Data?
     /// 请求创建时绑定的采集代次；idle/stop/会话切换后到达的回包不能混入新会话。
     private let captureGeneration: UInt64?
+    /// stopLoading 置位：Mock delay 等待期间被取消则不再回包、不再记录流量。
+    private var cancelled = false
 
     private static func sharedSession() -> URLSession {
         sessionLock.lock()
@@ -123,6 +125,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {
+        cancelled = true
         forwardingTask?.cancel()
         // 注意：不 invalidate 全局共享 session，否则会杀掉所有在飞的转发连接。
     }
@@ -167,48 +170,68 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             data = Data((mock.body ?? "").utf8)
         }
 
-        // 记录一条 Mock 命中流量。：同时捕获真实请求体（ 已知行为修复）。
-        //  修复：请求体在 init 阶段已抢读到 capturedBody（此后 stream 已耗尽），
-        // 此处必须复用 capturedBody，不能重读 request（会读到空体）。
-        let reqBodyData = self.capturedBody
-        let reqParts = Self.bodyParts(reqBodyData)
-        var reqHeaders: [String: [String]] = [:]
-        for (key, value) in request.allHTTPHeaderFields ?? [:] {
-            reqHeaders[key] = [value]
-        }
-        var entry = TrafficEntry(
-            timestamp: startTime,
-            method: method,
-            url: url.absoluteString,
-            path: path,
-            query: url.query ?? "",
-            requestHeaders: reqHeaders,
-            requestBody: reqParts.text,
-            requestBodyBase64: reqParts.base64,
-            requestBodyDecoded: Self.decodedBody(reqBodyData, contentType: request.value(forHTTPHeaderField: "Content-Type"), isRequest: true),
-            statusCode: mock.statusCode,
-            responseHeaders: headerFields.mapValues { [$0] },
-            responseBody: mock.body,
-            responseBodyBase64: mock.bodyBase64,
-            error: nil,
-            durationMs: max(0, Int(Date().timeIntervalSince(startTime) * 1000)),
-            mocked: true,
-            matchedRuleId: mock.ruleId
-        )
-        // mock 命中流量同样尝试解码展示（与真实抓包一致，仅展示；回放仍为
-        // bodyBase64 原始字节）。二进制规则（"Mock 此请求"创建）未编辑时 body 是
-        // "[binary N bytes]" 占位，补上解码文本后请求流里也能看到 JSON 详情。
-        if !data.isEmpty {
-            entry.responseBodyDecoded = Self.decodedBody(data, contentType: contentType)
-        }
-        if let captureGeneration {
-            TrafficCaptureController.shared.record(entry, generation: captureGeneration)
-        }
+        // Mock 回包延迟：命中规则后等待 delayMs 毫秒再回包。
+        // durationMs = 实际回包时刻 - startTime（请求到达时刻），故自然包含 delay；
+        // record 与 client 三段回包都放在 fire 里：延迟期间被 stopLoading 取消时，
+        // 既不回包也不留这条流量。
+        let delay = mock.delayMs ?? 0
+        let fire: () -> Void = { [weak self] in
+            guard let self, !self.cancelled else { return }
 
-        guard let response else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
-            return
+            // 记录一条 Mock 命中流量。：同时捕获真实请求体（ 已知行为修复）。
+            //  修复：请求体在 init 阶段已抢读到 capturedBody（此后 stream 已耗尽），
+            // 此处必须复用 capturedBody，不能重读 request（会读到空体）。
+            let reqBodyData = self.capturedBody
+            let reqParts = Self.bodyParts(reqBodyData)
+            var reqHeaders: [String: [String]] = [:]
+            for (key, value) in self.request.allHTTPHeaderFields ?? [:] {
+                reqHeaders[key] = [value]
+            }
+            var entry = TrafficEntry(
+                timestamp: self.startTime,
+                method: method,
+                url: url.absoluteString,
+                path: path,
+                query: url.query ?? "",
+                requestHeaders: reqHeaders,
+                requestBody: reqParts.text,
+                requestBodyBase64: reqParts.base64,
+                requestBodyDecoded: Self.decodedBody(reqBodyData, contentType: self.request.value(forHTTPHeaderField: "Content-Type"), isRequest: true),
+                statusCode: mock.statusCode,
+                responseHeaders: headerFields.mapValues { [$0] },
+                responseBody: mock.body,
+                responseBodyBase64: mock.bodyBase64,
+                error: nil,
+                durationMs: max(0, Int(Date().timeIntervalSince(self.startTime) * 1000)),
+                mocked: true,
+                matchedRuleId: mock.ruleId
+            )
+            // mock 命中流量同样尝试解码展示（与真实抓包一致，仅展示；回放仍为
+            // bodyBase64 原始字节）。二进制规则（"Mock 此请求"创建）未编辑时 body 是
+            // "[binary N bytes]" 占位，补上解码文本后请求流里也能看到 JSON 详情。
+            if !data.isEmpty {
+                entry.responseBodyDecoded = Self.decodedBody(data, contentType: contentType)
+            }
+            if let generation = self.captureGeneration {
+                TrafficCaptureController.shared.record(entry, generation: generation)
+            }
+
+            guard let response else {
+                self.client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+                return
+            }
+            self.deliverMockResponse(response: response, data: data)
         }
+        if delay > 0 {
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(delay), execute: fire)
+        } else {
+            fire()
+        }
+    }
+
+    /// 把组装好的 Mock 回包三段式交给 URLProtocolClient（didReceive / didLoad /
+    /// didFinishLoading）。delay 到期后异步调用，或 delayMs=0/nil 时立即同步调用。
+    private func deliverMockResponse(response: HTTPURLResponse, data: Data) {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         if !data.isEmpty {
             client?.urlProtocol(self, didLoad: data)

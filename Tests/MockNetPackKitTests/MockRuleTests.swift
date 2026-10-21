@@ -106,6 +106,133 @@ final class MockRuleTests: XCTestCase {
         XCTAssertEqual(entries?.first?["statusCode"] as? Int, 200)
     }
 
+    /// delayMs 解码契约：对齐 Go `omitempty` 语义。
+    /// - 老服务端 / delayMs=0：JSON 里没有 delayMs key → Swift 解为 nil（立即回包）。
+    /// - 新规则 delayMs=5000：JSON 里有 delayMs → 解为 5000。
+    /// 若字段误用非可选 Int，缺 key 会直接 decode 失败、整批规则拉取崩掉。
+    func testMockResponseDelayMsDecodingContract() throws {
+        let decoder = JSONDecoder()
+
+        // ① 老服务端：完全不带 delayMs key。
+        let oldJSON = """
+        {"id":"r1","method":"GET","path":"/a","response":{"statusCode":200,"body":"ok"},"enabled":true,"effective":true}
+        """
+        let oldRule = try decoder.decode(MockRule.self, from: Data(oldJSON.utf8))
+        XCTAssertNil(oldRule.response.delayMs, "缺省 delayMs 必须解为 nil（立即回包）")
+
+        // ② 新规则：显式 delayMs=5000。
+        let newJSON = """
+        {"id":"r2","method":"GET","path":"/b","response":{"statusCode":200,"body":"ok","delayMs":5000},"enabled":true,"effective":true}
+        """
+        let newRule = try decoder.decode(MockRule.self, from: Data(newJSON.utf8))
+        XCTAssertEqual(newRule.response.delayMs, 5000)
+
+        // ③ 显式 delayMs=0（服务端极少这样下发，但字段在时应解出 0）。
+        let zeroJSON = """
+        {"id":"r3","method":"GET","path":"/c","response":{"statusCode":200,"body":"ok","delayMs":0},"enabled":true,"effective":true}
+        """
+        let zeroRule = try decoder.decode(MockRule.self, from: Data(zeroJSON.utf8))
+        XCTAssertEqual(zeroRule.response.delayMs, 0)
+    }
+
+    /// delayMs 行为：命中规则后等待指定毫秒数再回包，且 durationMs 自然包含延迟。
+    func testMockResponseDelayDeliversAfterWait() throws {
+        let controller = TrafficCaptureController.shared
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-1")
+
+        // 用 200ms 小延迟：测试快、且能断言"不是立即返回"。
+        MockRuleController.shared.applyForTesting(rules: [MockRule(
+            id: "r-delay", method: "GET", path: "/api/slow",
+            response: MockResponse(statusCode: 200, headers: nil, body: "slow-ok", delayMs: 200),
+            enabled: true, effective: true)], version: 1)
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/traffic") == true {
+                return jsonResponse(202, json: ["accepted": true])
+            }
+            XCTFail("命中 Mock 不应转发真实网络")
+            return jsonResponse(200, json: ["real": true])
+        }
+
+        var req = URLRequest(url: URL(string: "https://api.example.com/api/slow")!)
+        req.httpMethod = "GET"
+
+        let start = Date()
+        let received = Box<Data?>(nil)
+        let exp = expectation(description: "delayed mock response")
+        businessSession().dataTask(with: req) { data, _, _ in
+            received.value = data
+            exp.fulfill()
+        }.resume()
+        wait(for: [exp], timeout: 5)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertEqual(received.value, Data("slow-ok".utf8))
+        XCTAssertGreaterThanOrEqual(elapsed, 0.15, "延迟回包耗时必须包含 delayMs（≥150ms）")
+        XCTAssertLessThan(elapsed, 2.0, "延迟不应异常放大（<2s）")
+    }
+
+    /// delayMs 取消：延迟等待期间 stopLoading 被调用时，不回包、也不记录流量。
+    func testMockResponseCancelledDuringDelayDoesNotDeliver() throws {
+        let controller = TrafficCaptureController.shared
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-1")
+
+        MockRuleController.shared.applyForTesting(rules: [MockRule(
+            id: "r-cancel", method: "GET", path: "/api/cancel",
+            response: MockResponse(statusCode: 200, headers: nil, body: "never-delivered", delayMs: 500),
+            enabled: true, effective: true)], version: 1)
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/traffic") == true {
+                return jsonResponse(202, json: ["accepted": true])
+            }
+            return jsonResponse(200, json: ["real": true])
+        }
+
+        var req = URLRequest(url: URL(string: "https://api.example.com/api/cancel")!)
+        req.httpMethod = "GET"
+
+        let task = businessSession().dataTask(with: req)
+        task.resume()
+        // 延迟启动后立即取消（20ms 后，远小于 500ms 延迟）。
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.02) {
+            task.cancel()
+        }
+
+        // 等足够久，确保如果不取消的话 fire 早就跑完了。
+        let cancelExp = expectation(description: "wait for cancel window")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) {
+            cancelExp.fulfill()
+        }
+        wait(for: [cancelExp], timeout: 2)
+
+        // 强制 flush。
+        controller.flush()
+        Thread.sleep(forTimeInterval: 0.1)
+
+        // 不应有任何 mocked 流量上传。
+        let trafficUploads = MockURLProtocol.recordedRequests.filter {
+            $0.url?.path.hasSuffix("/traffic") == true
+        }
+        // 注意：TrafficCaptureController 可能在 start 时已经上传过心跳等，
+        // 我们只关心是否有 /api/cancel 的 mock 命中流量。
+        // 这里通过 upload body 里的 entries 断言：没有 path=/api/cancel 的记录。
+        for upload in trafficUploads {
+            let body = Self.bodyOfRequest(upload)
+            let entries = body?["entries"] as? [[String: Any]]
+            let hasCancel = entries?.contains { $0["path"] as? String == "/api/cancel" } ?? false
+            XCTAssertFalse(hasCancel, "延迟期间取消的请求不应记录流量")
+        }
+    }
+
     /// 未命中：正常转发真实网络，走原始链路。
     func testNoMatchForwardsRealNetwork() throws {
         let controller = TrafficCaptureController.shared

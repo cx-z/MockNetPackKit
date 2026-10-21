@@ -161,6 +161,12 @@ struct MockResponse: Codable, Equatable {
     var body: String?
     /// 二进制回包 base64；存在时按原始字节回包，body 仅作展示。
     var bodyBase64: String?
+    /// Mock 回包延迟毫秒数。nil/0 = 立即回包。
+    /// 服务端 delayMs=0 时 omitempty 不下发该字段，Swift 解码为 nil，走立即回包路径；
+    /// 故用 Optional 对齐老服务端（缺字段不 throw）。用 `var` 与结构体其它可选字段一致：
+    /// 既让合成 Decodable 真正解码该 key（`let = nil` 常量会被合成解码跳过），
+    /// 又让本地成员初始化器对既有构造点省略为 nil。
+    var delayMs: Int?
     /// 命中该回包的规则 ID（ P1-1：match 时填充，随命中流量上报
     /// matchedRuleId）。解码自服务端时不携带，仅本地匹配后设置。
     var ruleId: String?
