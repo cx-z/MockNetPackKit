@@ -13,10 +13,19 @@ final class ConnectionControllerTests: XCTestCase {
     private let serverURL = URL(string: "http://mock.local/api/v1")!
     private let appID = "com.test.app"
 
+    /// iOS-AN9：Mock 快照隔离——独立 UserDefaults suite，避免读取真实设备残留快照干扰。
+    private static let mockSuiteName = "MockNetPackKitTests.ConnectionController"
+    private var mockDefaults: UserDefaults { UserDefaults(suiteName: Self.mockSuiteName)! }
+
     override func setUp() {
         super.setUp()
         MockURLProtocol.handler = nil
         MockURLProtocol.recordedRequests.removeAll()
+
+        // iOS-AN9：注入隔离快照 store（磁盘空）并重置，冷启动语义。
+        MockRuleController.shared.snapshotStore = MockRuleSnapshotStore(defaults: mockDefaults)
+        mockDefaults.removePersistentDomain(forName: Self.mockSuiteName)
+        MockRuleController.shared.reset()
 
         controller = ConnectionController()
         // 加速：心跳间隔与退避基数都用极小值。
@@ -34,6 +43,8 @@ final class ConnectionControllerTests: XCTestCase {
         controller = nil
         MockURLProtocol.handler = nil
         MockURLProtocol.recordedRequests.removeAll()
+        MockRuleController.shared.snapshotStore = MockRuleSnapshotStore() // 恢复 .standard
+        mockDefaults.removePersistentDomain(forName: Self.mockSuiteName)
         TrafficCaptureController.shared.stop()
         super.tearDown()
     }
@@ -426,5 +437,234 @@ final class ConnectionControllerTests: XCTestCase {
         let c = ConnectionClient(configuration: config, baseURL: serverURL)
         XCTAssertFalse(c.session === a.session,
             "injected configuration must keep its own session (test isolation)")
+    }
+
+    // MARK: - iOS-AN9 断连保护（Mock 规则快照）
+
+    /// 注入一份「旧快照」到内存 + 磁盘（模拟上次会话同步并落盘；磁盘写入使
+    /// 断连保护后的磁盘断言有意义——applyForTesting 本身只写内存）。
+    private func seedOldSnapshot() {
+        let rule = MockRule(
+            id: "old-rule", method: "GET", path: "/old",
+            response: MockResponse(statusCode: 503, headers: nil, body: "old", bodyBase64: nil, delayMs: nil),
+            enabled: true, effective: true)
+        MockRuleController.shared.reset()
+        MockRuleController.shared.applyForTesting(rules: [rule], version: 1)
+        MockRuleSnapshotStore(defaults: mockDefaults).save(MockRuleSnapshotStore.Snapshot(version: 1, rules: [rule]))
+    }
+
+    /// 旧规则 JSON（服务端下发用；静态避免 @Sendable handler 捕获 self）。
+    private static func oldRuleJSON() -> [String: Any] {
+        ["id": "old-rule", "method": "GET", "path": "/old",
+         "response": ["statusCode": 503, "body": "old"],
+         "enabled": true, "effective": true]
+    }
+
+    /// 新规则 JSON（服务端下发用；静态避免 @Sendable handler 捕获 self）。
+    private static func newRuleJSON() -> [String: Any] {
+        ["id": "new-rule", "method": "GET", "path": "/new",
+         "response": ["statusCode": 201, "body": "new"],
+         "enabled": true, "effective": true]
+    }
+
+    /// iOS-AN9：断连保护主路径——register 网络失败第 1 次快照仍生效、第 2 次清空、
+    /// 恢复后 sinceVersion=0 全量重拉、旧规则不恢复。
+    func testRegisterFailsTwice_ClearsMockSnapshot_ThenReconnects() {
+        seedOldSnapshot()
+        let registerFails = Box(2)
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/devices/register") == true {
+                if registerFails.value > 0 {
+                    registerFails.value -= 1
+                    throw URLError(.cannotConnectToHost) // 模拟断网
+                }
+                return jsonResponse(200, json: registerResponseJSON(app: "com.test.app", did: "any"))
+            }
+            if request.url?.path.hasSuffix("/mock-rules") == true {
+                return jsonResponse(200, json: ["version": 2, "rules": [Self.newRuleJSON()]])
+            }
+            return jsonResponse(200, json: heartbeatResponseJSON(session: nil, rulesVersion: 2))
+        }
+
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m9", osVersion: "17.5")
+
+        // 第 1 次失败：快照仍生效（不误清）。
+        waitUntil { self.registerCalls >= 1 }
+        XCTAssertNotNil(MockRuleController.shared.match(method: "GET", path: "/old"))
+
+        // 第 2 次连续失败：清空内存+磁盘快照 → match nil。
+        waitUntil { self.registerCalls >= 2 }
+        XCTAssertNil(MockRuleController.shared.match(method: "GET", path: "/old"))
+        XCTAssertNil(self.mockDefaults.data(forKey: MockRuleSnapshotStore.key), "磁盘快照应被清空")
+
+        // 恢复（第 3 次注册成功）→ 心跳成功 → sinceVersion=0 全量重拉新规则。
+        waitUntil { MockRuleController.shared.match(method: "GET", path: "/new") != nil }
+        let pull = MockURLProtocol.recordedRequests.first { $0.url?.path.hasSuffix("/mock-rules") == true }
+        XCTAssertEqual(pull?.url?.query, "sinceVersion=0", "清空后恢复应全量重拉（sinceVersion=0）")
+        // 旧规则不恢复。
+        XCTAssertNil(MockRuleController.shared.match(method: "GET", path: "/old"))
+        XCTAssertNotNil(self.mockDefaults.data(forKey: MockRuleSnapshotStore.key), "恢复后新快照应重新落盘")
+    }
+
+    /// iOS-AN9 F1：heartbeat 网络失败 x2 同样受保护（注册成功后设备离开内网）。
+    func testHeartbeatFailsTwice_ClearsMockSnapshot_ThenReconnects() {
+        seedOldSnapshot()
+        let failHeartbeats = Box(2)
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/devices/register") == true {
+                return jsonResponse(200, json: registerResponseJSON(app: "com.test.app", did: "any"))
+            }
+            if request.url?.path.hasSuffix("/heartbeat") == true {
+                if failHeartbeats.value > 0 {
+                    failHeartbeats.value -= 1
+                    throw URLError(.cannotConnectToHost)
+                }
+                return jsonResponse(200, json: heartbeatResponseJSON(session: sessionJSON(id: "s1"), rulesVersion: 2))
+            }
+            if request.url?.path.hasSuffix("/mock-rules") == true {
+                return jsonResponse(200, json: ["version": 2, "rules": [Self.newRuleJSON()]])
+            }
+            return jsonResponse(404, json: ["error": "not_found"])
+        }
+
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m9", osVersion: "17.5")
+
+        // 第 1 次心跳失败：快照仍生效。
+        waitUntil { self.heartbeatCalls >= 1 }
+        XCTAssertNotNil(MockRuleController.shared.match(method: "GET", path: "/old"))
+
+        // 第 2 次连续失败：清空。
+        waitUntil { self.heartbeatCalls >= 2 }
+        XCTAssertNil(MockRuleController.shared.match(method: "GET", path: "/old"))
+        XCTAssertNil(self.mockDefaults.data(forKey: MockRuleSnapshotStore.key))
+
+        // 恢复 → 全量重拉新规则生效、旧不恢复。
+        waitUntil { MockRuleController.shared.match(method: "GET", path: "/new") != nil }
+        let pull = MockURLProtocol.recordedRequests.first { $0.url?.path.hasSuffix("/mock-rules") == true }
+        XCTAssertEqual(pull?.url?.query, "sinceVersion=0")
+        XCTAssertNil(MockRuleController.shared.match(method: "GET", path: "/old"))
+    }
+
+    /// iOS-AN9 连续失败语义：失败夹成功不误清——任意一次成功握手即重置计数。
+    /// 7 次心跳 = 4 败 3 成（永不连续两次失败）→ 快照始终不被清空。
+    func testInterleavedHeartbeatFailures_ResetCounter_WithoutClearing() {
+        seedOldSnapshot()
+        // false=失败（断网），true=成功；交替出现，永不连续两次失败。
+        let hbSeq: [Bool] = [false, true, false, true, false, true, false]
+        let hbIdx = Box(0)
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/devices/register") == true {
+                return jsonResponse(200, json: registerResponseJSON(app: "com.test.app", did: "any"))
+            }
+            if request.url?.path.hasSuffix("/heartbeat") == true {
+                let failed = hbIdx.value < hbSeq.count && !hbSeq[hbIdx.value]
+                hbIdx.value += 1
+                if failed { throw URLError(.cannotConnectToHost) }
+                return jsonResponse(200, json: heartbeatResponseJSON(session: sessionJSON(id: "s1"), rulesVersion: 1))
+            }
+            if request.url?.path.hasSuffix("/mock-rules") == true {
+                return jsonResponse(200, json: ["version": 1, "rules": []])
+            }
+            return jsonResponse(404, json: ["error": "not_found"])
+        }
+
+        let logs = Box<[String]>([])
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m9", osVersion: "17.5",
+                         logHandler: { logs.value.append($0) })
+
+        waitUntil(timeout: 5) { self.heartbeatCalls >= hbSeq.count }
+        XCTAssertNotNil(MockRuleController.shared.match(method: "GET", path: "/old"),
+            "失败夹成功（交替）不应误清快照（连续失败语义）")
+        XCTAssertNotNil(self.mockDefaults.data(forKey: MockRuleSnapshotStore.key))
+        XCTAssertFalse(logs.value.contains { $0.contains("cleared local mock snapshot") },
+            "交替失败/成功不应触发断连保护清空日志")
+    }
+
+    /// iOS-AN9 连续失败语义核心：第 1 段断连清空 → 恢复重拉（成功握手重置计数）→
+    /// 第 2 段断连再次清空（累计语义下此处永不触发）。
+    func testSecondDisconnectEpisode_ClearsSnapshotAgain() {
+        seedOldSnapshot()
+        let failSecondEpisode = Box(0)
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/devices/register") == true {
+                return jsonResponse(200, json: registerResponseJSON(app: "com.test.app", did: "any"))
+            }
+            if request.url?.path.hasSuffix("/heartbeat") == true {
+                if failSecondEpisode.value > 0 {
+                    failSecondEpisode.value -= 1
+                    throw URLError(.cannotConnectToHost)
+                }
+                return jsonResponse(200, json: heartbeatResponseJSON(session: sessionJSON(id: "s1"), rulesVersion: 2))
+            }
+            if request.url?.path.hasSuffix("/mock-rules") == true {
+                return jsonResponse(200, json: ["version": 2, "rules": [Self.newRuleJSON()]])
+            }
+            return jsonResponse(404, json: ["error": "not_found"])
+        }
+
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m9", osVersion: "17.5")
+
+        // 第 1 段：心跳成功（重置计数）→ 拉取新规则生效。
+        waitUntil { MockRuleController.shared.match(method: "GET", path: "/new") != nil }
+        // 第 2 段：连续 2 次心跳失败 → 新快照再次被清空。
+        failSecondEpisode.value = 2
+        waitUntil { MockRuleController.shared.match(method: "GET", path: "/new") == nil }
+        XCTAssertNil(MockRuleController.shared.match(method: "GET", path: "/new"))
+        XCTAssertNil(self.mockDefaults.data(forKey: MockRuleSnapshotStore.key))
+    }
+
+    /// iOS-AN9：register 404（设备未注册，永久拒绝）→ 立即清空 Mock 快照（不等 2 次）。
+    func testRegister404_ClearsMockSnapshotImmediately() {
+        seedOldSnapshot()
+        MockURLProtocol.handler = { _ in
+            jsonResponse(404, json: ["error": "device_not_registered"])
+        }
+
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m9", osVersion: "17.5")
+
+        waitUntil { self.controller.connectionState == .offline }
+        XCTAssertNil(MockRuleController.shared.match(method: "GET", path: "/old"), "404 永久拒绝应立即清空快照")
+        XCTAssertNil(self.mockDefaults.data(forKey: MockRuleSnapshotStore.key))
+    }
+
+    /// iOS-AN9：heartbeat 404（设备未注册，永久拒绝）→ 立即清空 Mock 快照（不等 2 次）。
+    func testHeartbeat404_ClearsMockSnapshotImmediately() {
+        seedOldSnapshot()
+        let failNextHeartbeat = Box(true)
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/devices/register") == true {
+                return jsonResponse(200, json: registerResponseJSON(app: "com.test.app", did: "any"))
+            }
+            if failNextHeartbeat.value {
+                failNextHeartbeat.value = false
+                return jsonResponse(404, json: ["error": "device_not_registered"])
+            }
+            return jsonResponse(200, json: heartbeatResponseJSON(session: nil))
+        }
+
+        controller.start(server: serverURL, appID: appID, appVersion: nil, sdkVersion: "0.2.0-m9", osVersion: "17.5")
+
+        waitUntil { self.controller.connectionState == .offline }
+        XCTAssertNil(MockRuleController.shared.match(method: "GET", path: "/old"), "心跳 404 应立即清空快照")
+        XCTAssertNil(self.mockDefaults.data(forKey: MockRuleSnapshotStore.key))
+    }
+
+    /// iOS-AN9：register 403 + 配对令牌（令牌失效，永久拒绝）→ 立即清空 Mock 快照（不等 2 次）。
+    func testRegister403_WithPairingToken_ClearsMockSnapshotImmediately() {
+        seedOldSnapshot()
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/devices/register") == true {
+                return jsonResponse(403, json: ["error": "pairing_token_invalid", "message": "token expired"])
+            }
+            return jsonResponse(200, json: heartbeatResponseJSON(session: nil))
+        }
+
+        controller.start(server: serverURL, appID: appID, appVersion: nil,
+                         sdkVersion: "0.2.0-m9", osVersion: "17.5",
+                         pairingToken: "stale-token", deviceName: "Test iPhone")
+
+        waitUntil { self.controller.connectionState == .tokenInvalid }
+        XCTAssertNil(MockRuleController.shared.match(method: "GET", path: "/old"), "403 令牌失效应立即清空快照")
+        XCTAssertNil(self.mockDefaults.data(forKey: MockRuleSnapshotStore.key))
     }
 }

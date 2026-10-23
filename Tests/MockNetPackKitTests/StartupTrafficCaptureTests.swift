@@ -53,11 +53,18 @@ final class StartupTrafficCaptureTests: XCTestCase {
     private let serverURL = URL(string: "http://mock.local/api/v1")!
     private var uploads: Uploads!
 
+    /// iOS-AN9：Mock 快照隔离——独立 UserDefaults suite，避免读取真实设备残留快照干扰。
+    private static let mockSuiteName = "MockNetPackKitTests.StartupTrafficCapture"
+    private var mockDefaults: UserDefaults { UserDefaults(suiteName: Self.mockSuiteName)! }
+
     /// 注入确定性转发/上传响应；关闭自动刷批以显式控制首次心跳前后的边界。
     override func setUp() {
         super.setUp()
         TrafficCaptureController.shared.stop()
         TrafficCaptureController.shared.resetBinaryCodecs()
+        // iOS-AN9：注入隔离快照 store（磁盘空）并重置，冷启动语义。
+        MockRuleController.shared.snapshotStore = MockRuleSnapshotStore(defaults: mockDefaults)
+        mockDefaults.removePersistentDomain(forName: Self.mockSuiteName)
         MockRuleController.shared.reset()
         let uploads = Uploads()
         self.uploads = uploads
@@ -90,6 +97,8 @@ final class StartupTrafficCaptureTests: XCTestCase {
         TrafficCaptureController.shared.clientFactory = nil
         TrafficCaptureController.shared.flushInterval = 2
         MockRuleController.shared.reset()
+        MockRuleController.shared.snapshotStore = MockRuleSnapshotStore() // 恢复 .standard
+        mockDefaults.removePersistentDomain(forName: Self.mockSuiteName)
         MockNetPackURLProtocol.forwardingConfiguration = nil
         MockURLProtocol.handler = nil
         MockURLProtocol.deferredHandler = nil
@@ -167,14 +176,49 @@ final class StartupTrafficCaptureTests: XCTestCase {
                        ["/character/get_discover_config", "/character/get_discover_list"])
     }
 
-    /// 首次心跳前的请求只走真实网络，即使内存中存在旧 Mock 快照也不执行。
-    func testStartupDoesNotApplyMockOrCaptureSDKRequests() {
+    /// iOS-AN9 反转（原用例：启动期不 Mock）：启动缓冲期（首次心跳前）请求命中
+    /// 磁盘快照 → 直接 Mock 回包（不回真实网络、真实服务器 0 次请求）；首个有效
+    /// 会话晋升后上传 mocked=true + matchedRuleId。
+    func testStartupAppliesDiskSnapshotMock() throws {
+        // 模拟上次进程同步落盘：写入 {version, rules} 到独立 suite。
+        MockRuleSnapshotStore(defaults: mockDefaults).save(MockRuleSnapshotStore.Snapshot(
+            version: 3,
+            rules: [MockRule(
+                id: "old-rule", method: "GET", path: "/character/get_discover_config",
+                response: MockResponse(statusCode: 503, headers: nil, body: "old", bodyBase64: nil),
+                enabled: true, effective: true)]))
+        MockRuleController.shared.reset() // loaded=false：模拟冷启动进程
+
         startCapture()
-        MockRuleController.shared.applyForTesting(rules: [MockRule(
-            id: "old-rule", method: "GET", path: "/character/get_discover_config",
-            response: MockResponse(statusCode: 503, headers: nil, body: "old", bodyBase64: nil),
-            enabled: true, effective: true)], version: 1)
-        request("/character/get_discover_config")
+        XCTAssertFalse(TrafficCaptureController.shared.isCapturing)
+
+        // 启动缓冲期请求：命中磁盘快照直接 Mock，不转发真实网络。
+        let done = expectation(description: "startup mock")
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockNetPackURLProtocol.self, MockURLProtocol.self]
+        let session = URLSession(configuration: config)
+        session.dataTask(with: URL(string: "https://business.local/character/get_discover_config")!) { data, response, error in
+            XCTAssertNil(error)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 503, "应直接回 Mock 规则状态码")
+            XCTAssertEqual(data, Data("old".utf8), "应直接回 Mock 规则 body，而非真实网络")
+            done.fulfill()
+        }.resume()
+        wait(for: [done], timeout: 3)
+        session.finishTasksAndInvalidate()
+        // 真实服务器 0 次业务请求（未被转发）。
+        XCTAssertFalse(MockURLProtocol.recordedRequests.contains { $0.url?.host == "business.local" },
+                       "启动期命中快照 Mock 不应转发真实网络")
+
+        // 晋升上传：mocked=true + matchedRuleId=old-rule。
+        TrafficCaptureController.shared.updateSession(capturing: true, sessionID: "first-session")
+        waitForUpload()
+        let body = uploads.snapshot.first
+        let entries = body?["entries"] as? [[String: Any]]
+        XCTAssertEqual(entries?.compactMap { $0["path"] as? String }, ["/character/get_discover_config"])
+        XCTAssertEqual(entries?.first?["mocked"] as? Bool, true)
+        XCTAssertEqual(entries?.first?["matchedRuleId"] as? String, "old-rule")
+
+        // SDK 自身请求（skipHeader）不拦截。
         var internalRequest = URLRequest(url: serverURL)
         internalRequest.setValue("1", forHTTPHeaderField: MockNetPackURLProtocol.skipHeader)
         XCTAssertFalse(MockNetPackURLProtocol.canInit(with: internalRequest))

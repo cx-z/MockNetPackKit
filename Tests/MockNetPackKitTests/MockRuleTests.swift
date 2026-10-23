@@ -8,11 +8,18 @@ final class MockRuleTests: XCTestCase {
     private let appID = "com.test.app"
     private let did = "did-1"
 
+    /// iOS-AN9：Mock 快照隔离——独立 UserDefaults suite，避免读取真实设备残留快照干扰。
+    private static let mockSuiteName = "MockNetPackKitTests.MockRule"
+    private var mockDefaults: UserDefaults { UserDefaults(suiteName: Self.mockSuiteName)! }
+
     override func setUp() {
         super.setUp()
         MockURLProtocol.handler = nil
         MockURLProtocol.recordedRequests.removeAll()
         MockNetPackURLProtocol.forwardingConfiguration = nil
+        // iOS-AN9：注入隔离快照 store（磁盘空）并重置，冷启动语义。
+        MockRuleController.shared.snapshotStore = MockRuleSnapshotStore(defaults: mockDefaults)
+        mockDefaults.removePersistentDomain(forName: Self.mockSuiteName)
         MockRuleController.shared.reset()
 
         let controller = TrafficCaptureController.shared
@@ -28,6 +35,8 @@ final class MockRuleTests: XCTestCase {
         TrafficCaptureController.shared.stop()
         TrafficCaptureController.shared.resetBinaryCodecs()
         MockRuleController.shared.reset()
+        MockRuleController.shared.snapshotStore = MockRuleSnapshotStore() // 恢复 .standard
+        mockDefaults.removePersistentDomain(forName: Self.mockSuiteName)
         MockURLProtocol.handler = nil
         MockURLProtocol.recordedRequests.removeAll()
         MockNetPackURLProtocol.forwardingConfiguration = nil
@@ -618,6 +627,187 @@ final class MockRuleTests: XCTestCase {
         XCTAssertEqual(sessionID?.int64Value, Int64("1473156146373935104"), "客户端按完整 Int64 匹配的 ID 必须等于原值")
         let activeList = (parsed?["data"] as? [String: Any])?["active_session_list"] as? [NSNumber]
         XCTAssertEqual(activeList?.first?.int64Value, Int64("1576844185645694976"), "active_session_list 首项必须等于原值")
+    }
+
+    // MARK: - iOS-AN9 快照持久化 / 断连保护 / 并发
+
+    /// 快照 roundtrip：Store.save → 新 Store.load → 字段等值；
+    /// ruleId 不落盘（MockResponse.ruleId 为匹配时瞬态字段，序列化 JSON 中不存在该 key；
+    /// 规则自身 id 落盘——冷启动 matchedRuleId 上报依赖它，与安卓规则一致）。
+    func testSnapshotRoundTrip_PreservesFieldsWithoutRuleIdKey() throws {
+        let store = MockRuleSnapshotStore(defaults: mockDefaults)
+        let rules = [
+            MockRule(
+                id: "r1", method: "POST", path: "/api/v1/business",
+                response: MockResponse(statusCode: 503,
+                    headers: ["Content-Type": "application/json", "X-Mock": "1"],
+                    body: "old", bodyBase64: nil, delayMs: 250),
+                enabled: true, effective: true),
+            MockRule(
+                id: "r2", method: "GET", path: "/x/y",
+                response: MockResponse(statusCode: 200,
+                    headers: nil, body: nil, bodyBase64: "aGVsbG8=", delayMs: nil),
+                enabled: false, effective: false),
+        ]
+        store.save(MockRuleSnapshotStore.Snapshot(version: 7, rules: rules))
+
+        // 读回 → 等值。
+        let loaded = try XCTUnwrap(store.load(), "快照应可读回")
+        XCTAssertEqual(loaded.version, 7)
+        XCTAssertEqual(loaded.rules, rules)
+
+        // ruleId 不落盘：序列化 JSON 中规则 response 不得含 ruleId key。
+        let data = try JSONEncoder().encode(MockRuleSnapshotStore.Snapshot(version: 7, rules: rules))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let rulesArr = try XCTUnwrap(json["rules"] as? [[String: Any]])
+        for r in rulesArr {
+            let resp = try XCTUnwrap(r["response"] as? [String: Any])
+            XCTAssertNil(resp["ruleId"], "ruleId（瞬态匹配字段）不得落盘")
+        }
+
+        // 加载后匹配：matchedRuleId 由规则自身 id 填充（规则 id 落盘保障冷启动上报）。
+        MockRuleController.shared.snapshotStore = store
+        MockRuleController.shared.reset()
+        let resp = try XCTUnwrap(MockRuleController.shared.match(method: "POST", path: "/api/v1/business"))
+        XCTAssertEqual(resp.statusCode, 503)
+        XCTAssertEqual(resp.headers?["X-Mock"], "1")
+        XCTAssertEqual(resp.body, "old")
+        XCTAssertEqual(resp.delayMs, 250)
+        XCTAssertEqual(resp.ruleId, "r1", "命中后 ruleId 由规则 id 填充（冷启动 matchedRuleId 上报依赖）")
+    }
+
+    /// ensureLoaded 懒加载：磁盘预写快照 + reset（模拟冷启动进程）→ 首次 match 命中磁盘快照；
+    /// 磁盘为空 → match nil（fail-open，不 Mock）。
+    func testEnsureLoadedLoadsDiskSnapshotOnFirstMatch() throws {
+        MockRuleController.shared.snapshotStore = MockRuleSnapshotStore(defaults: mockDefaults)
+        mockDefaults.removePersistentDomain(forName: Self.mockSuiteName)
+
+        // 预写磁盘快照（模拟上次进程同步落盘）。
+        MockRuleSnapshotStore(defaults: mockDefaults).save(MockRuleSnapshotStore.Snapshot(
+            version: 5,
+            rules: [MockRule(
+                id: "r-disk", method: "GET", path: "/api/disk",
+                response: MockResponse(statusCode: 200, headers: nil, body: "from-disk"),
+                enabled: true, effective: true)]))
+        MockRuleController.shared.reset() // loaded=false：模拟冷启动
+
+        // 首次 match 触发 ensureLoaded → 磁盘快照生效。
+        let hit = MockRuleController.shared.match(method: "GET", path: "/api/disk")
+        XCTAssertEqual(hit?.body, "from-disk")
+        XCTAssertEqual(hit?.ruleId, "r-disk")
+
+        // 磁盘为空 → match nil。
+        mockDefaults.removePersistentDomain(forName: Self.mockSuiteName)
+        MockRuleController.shared.reset()
+        XCTAssertNil(MockRuleController.shared.match(method: "GET", path: "/api/disk"),
+                     "磁盘无快照时不应 Mock（fail-open）")
+    }
+
+    /// F5：损坏快照 → match nil（fail-open）、坏数据被清、后续 apply 可正常重写磁盘。
+    func testCorruptSnapshotIsClearedAndFailsOpen() throws {
+        MockRuleController.shared.snapshotStore = MockRuleSnapshotStore(defaults: mockDefaults)
+        mockDefaults.removePersistentDomain(forName: Self.mockSuiteName)
+        mockDefaults.set(Data("not-json".utf8), forKey: MockRuleSnapshotStore.key)
+        MockRuleController.shared.reset()
+
+        XCTAssertNil(MockRuleController.shared.match(method: "GET", path: "/api/x"),
+                     "损坏快照应 fail-open（不 Mock）")
+        XCTAssertNil(mockDefaults.data(forKey: MockRuleSnapshotStore.key), "坏快照应被清除")
+
+        // 后续同步可正常重写磁盘。
+        MockRuleController.shared.reset()
+        let store = MockRuleSnapshotStore(defaults: mockDefaults)
+        store.save(MockRuleSnapshotStore.Snapshot(version: 9,
+            rules: [MockRule(id: "r9", method: "GET", path: "/api/x",
+                response: MockResponse(statusCode: 200, headers: nil, body: "ok"),
+                enabled: true, effective: true)]))
+        let loaded = try XCTUnwrap(store.load())
+        XCTAssertEqual(loaded.version, 9, "清坏文件后下次同步应能正常重写磁盘")
+    }
+
+    /// 增量拉取基于磁盘版本：磁盘快照 version=5 + reset（冷启动）→ 服务端 5 → no-op；
+    /// 服务端 6 → sinceVersion=5 增量拉取。
+    func testSyncIncrementalPullUsesDiskSnapshotVersion() async throws {
+        MockRuleController.shared.snapshotStore = MockRuleSnapshotStore(defaults: mockDefaults)
+        mockDefaults.removePersistentDomain(forName: Self.mockSuiteName)
+        MockRuleSnapshotStore(defaults: mockDefaults).save(MockRuleSnapshotStore.Snapshot(
+            version: 5, rules: [MockRule(
+                id: "r5", method: "GET", path: "/api/disk",
+                response: MockResponse(statusCode: 200, headers: nil, body: "from-disk"),
+                enabled: true, effective: true)]))
+        MockRuleController.shared.reset()
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let client = ConnectionClient(configuration: config, baseURL: serverURL)
+        let appID = self.appID
+        let did = self.did
+
+        // 服务端 6 → sinceVersion=5 增量拉取。
+        MockURLProtocol.handler = { request in
+            XCTAssertTrue(request.url?.path.hasSuffix("/mock-rules") == true)
+            XCTAssertEqual(request.url?.query, "sinceVersion=5", "应基于磁盘快照版本增量拉取")
+            return jsonResponse(200, json: ["version": 6, "rules": []])
+        }
+        await MockRuleController.shared.syncIfNeeded(client: client, app: appID, did: did, serverVersion: 6)
+        let pulls = MockURLProtocol.recordedRequests.filter { $0.url?.path.hasSuffix("/mock-rules") == true }
+        XCTAssertEqual(pulls.count, 1)
+
+        // 服务端 6（与已落盘版本一致，再次冷启动）→ no-op。
+        MockURLProtocol.recordedRequests.removeAll()
+        MockRuleController.shared.reset() // 重新冷启动，磁盘 version=6（上一步已落盘）
+        await MockRuleController.shared.syncIfNeeded(client: client, app: appID, did: did, serverVersion: 6)
+        XCTAssertTrue(MockURLProtocol.recordedRequests.filter { $0.url?.path.hasSuffix("/mock-rules") == true }.isEmpty,
+                      "版本一致不应拉取")
+    }
+
+    /// F2/D2：并发 match / clearSnapshot / applyForTesting 不抛异常、不撕裂。
+    func testConcurrentMatchAndClearDoesNotTearOrCrash() throws {
+        MockRuleController.shared.snapshotStore = MockRuleSnapshotStore(defaults: mockDefaults)
+        mockDefaults.removePersistentDomain(forName: Self.mockSuiteName)
+        MockRuleController.shared.reset()
+
+        // 线程安全收集器。
+        final class Collector: @unchecked Sendable {
+            private let lock = NSLock()
+            private var items: [String] = []
+            func append(_ s: String) { lock.lock(); defer { lock.unlock() }; items.append(s) }
+            var snapshot: [String] { lock.lock(); defer { lock.unlock() }; return items }
+        }
+        let errors = Collector()
+
+        let ruleA = MockRule(id: "A", method: "GET", path: "/a",
+            response: MockResponse(statusCode: 200), enabled: true, effective: true)
+        let queue = DispatchQueue(label: "concurrent-match-clear", attributes: .concurrent)
+        let group = DispatchGroup()
+
+        // 写线程：交替 applyForTesting / clearSnapshot。
+        group.enter()
+        queue.async {
+            for i in 0..<200 {
+                if i % 2 == 0 {
+                    MockRuleController.shared.applyForTesting(rules: [ruleA], version: i + 1)
+                } else {
+                    MockRuleController.shared.clearSnapshot()
+                }
+            }
+            group.leave()
+        }
+        // 读线程：并发 match。
+        for _ in 0..<3 {
+            group.enter()
+            queue.async {
+                for _ in 0..<2000 {
+                    let m = MockRuleController.shared.match(method: "GET", path: "/a")
+                    if let m, m.ruleId != "A" {
+                        errors.append("unexpected ruleId \(m.ruleId ?? "nil")")
+                    }
+                }
+                group.leave()
+            }
+        }
+        group.wait()
+        XCTAssertTrue(errors.snapshot.isEmpty, "并发 match/clear 不得返回撕裂快照：\(errors.snapshot)")
     }
 
     // MARK: - 辅助

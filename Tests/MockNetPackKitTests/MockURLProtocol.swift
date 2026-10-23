@@ -104,7 +104,7 @@ func registerResponseJSON(app: String, did: String) -> [String: Any] {
 }
 
 /// 标准心跳响应。
-func heartbeatResponseJSON(session: [String: Any]?) -> [String: Any] {
+func heartbeatResponseJSON(session: [String: Any]?, rulesVersion: Int = 0) -> [String: Any] {
     var json: [String: Any] = [
         "ok": true,
         "serverTime": "2026-09-19T00:00:00Z",
@@ -112,7 +112,7 @@ func heartbeatResponseJSON(session: [String: Any]?) -> [String: Any] {
             "heartbeatIntervalSeconds": 20,
             "heartbeatTimeoutSeconds": 60,
         ],
-        "rulesVersion": 0,
+        "rulesVersion": rulesVersion,
     ]
     if let session {
         json["session"] = session

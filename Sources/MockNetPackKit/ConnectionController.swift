@@ -23,6 +23,11 @@ final class ConnectionController: @unchecked Sendable {
     /// 进程内共享实例（业务方经 `MockNetPackKit` 门面访问）。
     static let shared = ConnectionController()
 
+    /// iOS-AN9 断连保护：register/heartbeat 网络失败达该次数即清空本地 Mock 快照
+    /// （内存+磁盘）；连接恢复后以 sinceVersion=0 重新下载。用户决策：连续失败
+    /// 第 2 次即清空、旧快照不恢复。
+    static let registerFailLimit = 2
+
     // MARK: - 测试注入点
 
     /// 客户端工厂：测试注入 MockURLProtocol 的 session 配置。
@@ -59,6 +64,9 @@ final class ConnectionController: @unchecked Sendable {
     private var registered = false
     /// : 设备未在 Web 注册（register/heartbeat 404）→ 静默停循环，不再重试。
     private var unregistered = false
+    /// iOS-AN9 断连保护：本次连接内 register/heartbeat **连续**网络失败计数
+    /// （start/任意成功握手重置；达到 registerFailLimit 即清空本地 Mock 快照）。
+    private var registerFailCount = 0
     private var currentBackoff: TimeInterval = 1
     private var inflight = false
 
@@ -104,6 +112,7 @@ final class ConnectionController: @unchecked Sendable {
         serverConfig = ServerConfig(heartbeatIntervalSeconds: 5, heartbeatTimeoutSeconds: 60)
         registered = false
         unregistered = false
+        registerFailCount = 0 // iOS-AN9：启动重置断连保护计数
         currentBackoff = backoffBase
         pairingTokenValue = pairingToken
         deviceNameValue = deviceName
@@ -277,6 +286,11 @@ final class ConnectionController: @unchecked Sendable {
                 currentBackoff = backoffBase
                 registered = true
                 serverConfig = resp.serverConfig
+                // iOS-AN9 连续失败语义（用户决策 2026-10-23）：任意一次成功握手
+                // （register 成功 / heartbeat 成功）即重置断连保护计数——只有
+                // 「连续」失败 2 次才清空快照，避免网络抖动（失败夹成功）误清；
+                // 多段断连各自独立保护（第 2 段断连同样在第 2 次连续失败时清空）。
+                registerFailCount = 0
             }
             setConnectionState(.connected)
             // ：先驱动流量采集启停，再广播会话状态——外部 onSessionStateChange
@@ -313,11 +327,18 @@ final class ConnectionController: @unchecked Sendable {
                 }
                 setConnectionState(.offline)
                 TrafficCaptureController.shared.cancelStartupCapture(generation: captureGeneration)
+                // iOS-AN9：设备未注册 → 本地 Mock 快照无意义，立即清空（内存+磁盘）。
+                MockRuleController.shared.clearSnapshot()
                 log("heartbeat 404: device not registered; SDK idle (re-register in Web and restart App)")
                 finishCycle(gen: gen)
 
             default:
                 // 网络错误 / 5xx / 解码失败 → 指数退避重连。
+                // iOS-AN9 断连保护：heartbeat 网络失败同样计数（对齐安卓 F1——
+                // 注册成功后设备离开内网、心跳持续失败同样受保护），达阈值清空
+                // 本地 Mock 快照：设备离开内网后无法连接服务器时，旧快照不会
+                // 无限期控制 App 行为。
+                countRegisterFailure()
                 let backoff = advanceBackoff()
                 setConnectionState(.offline)
                 log("heartbeat failed: \(error.localizedDescription); retrying in \(Int(backoff))s")
@@ -357,6 +378,7 @@ final class ConnectionController: @unchecked Sendable {
             withLock {
                 registered = true
                 serverConfig = resp.serverConfig
+                registerFailCount = 0 // 注册成功：重置 iOS-AN9 断连保护计数
             }
             log("registered app=\(appID) did=\(did)")
             setConnectionState(.connected)
@@ -377,6 +399,8 @@ final class ConnectionController: @unchecked Sendable {
             }
             setConnectionState(.offline)
             TrafficCaptureController.shared.cancelStartupCapture(generation: captureGeneration)
+            // iOS-AN9：设备未注册 → 本地 Mock 快照无意义，立即清空（内存+磁盘）。
+            MockRuleController.shared.clearSnapshot()
             log("register 404: device not registered on server; SDK idle (register the device in Web)")
             finishCycle(gen: gen)
             // 不 scheduleNext。
@@ -398,11 +422,14 @@ final class ConnectionController: @unchecked Sendable {
                     }
                     setConnectionState(.tokenInvalid)
                     TrafficCaptureController.shared.cancelStartupCapture(generation: captureGeneration)
+                    // iOS-AN9：令牌失效 → 本地 Mock 快照无意义，立即清空（内存+磁盘）。
+                    MockRuleController.shared.clearSnapshot()
                     log("register 403: pairing token invalid or expired; SDK idle (re-scan a fresh QR)")
                     finishCycle(gen: gen)
                     return  // 不 scheduleNext。
                 }
             }
+            countRegisterFailure()
             let backoff = advanceBackoff()
             setConnectionState(.offline)
             log("register httpStatus=\(code); retrying in \(Int(backoff))s")
@@ -413,6 +440,7 @@ final class ConnectionController: @unchecked Sendable {
                 finishCycle(gen: gen)
                 return
             }
+            countRegisterFailure()
             let backoff = advanceBackoff()
             setConnectionState(.offline)
             log("register failed: \(error.localizedDescription); retrying in \(Int(backoff))s")
@@ -422,6 +450,24 @@ final class ConnectionController: @unchecked Sendable {
     }
 
     // MARK: - 心跳
+
+    /// iOS-AN9 断连保护：register/heartbeat **连续**网络失败计数（用户决策
+    /// 2026-10-23：连续失败 2 次清空，而非启动周期内累计——任意成功握手即
+    /// 重置，见 start()/register 成功/heartbeat 成功三处）。达到
+    /// registerFailLimit（第 2 次连续失败）即清空本地 Mock 快照（内存+磁盘）
+    /// ——此后启动缓冲期不再用旧快照 Mock；连接恢复后以 sinceVersion=0 重新
+    /// 从服务端下载（用户决策：旧快照不恢复）。
+    /// 仅首次达到阈值时清快照并打日志（后续失败不再重复无操作清空）。
+    private func countRegisterFailure() {
+        let reached = withLock { () -> Bool in
+            registerFailCount += 1
+            return registerFailCount == Self.registerFailLimit
+        }
+        if reached {
+            MockRuleController.shared.clearSnapshot()
+            log("connection failed \(registerFailCount) times; cleared local mock snapshot (re-download on reconnect)")
+        }
+    }
 
     private func heartbeat(client: ConnectionClient, appID: String, did: String) async -> Result<HeartbeatResponse, Error> {
         let sdk = withLock { sdkVersionValue }

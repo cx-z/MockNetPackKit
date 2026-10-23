@@ -79,15 +79,18 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         super.init(request: rq, cachedResponse: cachedResponse, client: client)
     }
 
-    /// 有效会话内尝试 Mock，否则立即转发真实请求；启动握手不等待平台、不应用旧规则。
+    /// 门闩接管期内尝试 Mock，否则立即转发真实请求；启动握手不等待平台、不应用旧规则。
     override func startLoading() {
         startTime = Date()
 
-        // ：先查本地 Mock 快照。命中则直接合成回包，不转发真实网络。
+        // iOS-AN9：门闩期（capturing 或 启动缓冲）即匹配 Mock——canInit 已保证
+        // httpCaptureGeneration != nil（startLoading 仅在 canInit 通过后调用）。
+        // 去掉原 isCapturing 限定：启动握手期（注册/首心跳前）的请求也能命中磁盘
+        // 快照 Mock；快照为空（从未同步 / 断连保护已清空）→ match 返回 nil →
+        // 转发真实网络（fail-open A 不变）。
         let method = request.httpMethod ?? "GET"
         let path = request.url?.path ?? ""
-        if TrafficCaptureController.shared.isCapturing,
-           let mock = MockRuleController.shared.match(method: method, path: path) {
+        if let mock = MockRuleController.shared.match(method: method, path: path) {
             serve(mock: mock, method: method, path: path)
             return
         }
