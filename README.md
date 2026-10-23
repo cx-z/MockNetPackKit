@@ -2,7 +2,7 @@
 
 MockNetPack's iOS debug SDK captures HTTP/HTTPS traffic inside the app, uploads it in batches, synchronizes device-scoped mock rules, and replays responses locally. No system proxy or capture certificate is required.
 
-The repository version is **1.0.3**. It supports iOS 13+. `Package.swift` uses Swift tools 6.0 and declares macOS 12+ for local testing. The SDK has no third-party Swift package dependencies; QR scanning uses AVFoundation and gzip uses system zlib.
+The repository version is **1.1.0**. It supports iOS 13+. `Package.swift` uses Swift tools 6.0 and declares macOS 12+ for local testing. The SDK has no third-party Swift package dependencies; QR scanning uses AVFoundation and gzip uses system zlib.
 
 ## Server and workflow
 
@@ -29,7 +29,7 @@ Add the pod to the business target for debug configurations only. Adjust configu
 ```ruby
 pod 'MockNetPackKit',
     :git => 'https://github.com/cx-z/MockNetPackKit.git',
-    :tag => '1.0.3',
+    :tag => '1.1.0',
     :configurations => ['Debug']
 ```
 
@@ -37,7 +37,7 @@ Run `pod install` and open the `.xcworkspace`. Guard SDK imports and calls with 
 
 ### Swift Package Manager
 
-Add `https://github.com/cx-z/MockNetPackKit.git` in Xcode, pin version `1.0.3`, and select product `MockNetPackKit`.
+Add `https://github.com/cx-z/MockNetPackKit.git` in Xcode, pin version `1.1.0`, and select product `MockNetPackKit`.
 
 A normal SPM target dependency is not automatically Debug-only. Use a debug target or host build integration that excludes this product from Release linking. `#if DEBUG` guards calls, but does not by itself prove that the library is absent. Host CI should check Release Archive linkage and symbols.
 
@@ -157,7 +157,7 @@ yet; the protocol is open for them (see "Writing an adapter" below).
 ```ruby
 # Podfile (Debug configuration only)
 pod 'MockNetPackKit', :git => 'https://github.com/cx-z/MockNetPackKit.git',
-    :tag => '1.0.3', :configurations => ['Debug']
+    :tag => '1.1.0', :configurations => ['Debug']
 ```
 
 ```swift

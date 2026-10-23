@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'MockNetPackKit'
-  s.version          = '1.0.4'
+  s.version          = '1.1.0'
   s.summary          = 'MockNetPack iOS SDK. HTTP capture & remote mock, integrated by the host app.'
   s.description      = <<-DESC
 MockNetPackKit is the client SDK for the internal HTTP capture & Mock platform.
