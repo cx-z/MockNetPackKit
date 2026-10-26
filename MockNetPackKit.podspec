@@ -19,7 +19,7 @@ any specific push framework is shipped or auto-registered.
   s.homepage         = 'https://github.com/cx-z/mockd'
   s.license          = { :type => 'Proprietary' }
   s.author           = { 'MockNetPack' => 'dev@mocknetpack.local' }
-  s.source           = { :git => 'https://github.com/cx-z/MockNetPackKit.git', :tag => '1.0.4' }
+  s.source           = { :git => 'https://github.com/cx-z/MockNetPackKit.git', :tag => '1.1.0' }
   s.ios.deployment_target = '13.0'
   s.swift_version    = '5.0'
 
