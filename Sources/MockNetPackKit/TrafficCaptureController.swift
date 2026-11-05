@@ -8,7 +8,7 @@ import os
 ///   驱动；首次心跳前有界暂存 HTTP 流量，有会话则上传，无会话则丢弃。
 ///   capturing 时正常采集，idle 时停止并清空待上传批次
 ///   （会话结束本地未上传的临时记录一并丢弃，与服务端"临时记录随会话清空"一致）。
-/// - 攒批上传：按条数阈值（200）/字节阈值（8MB）/定时（2s）触发，
+/// - 攒批上传：按条数阈值（200）/字节阈值（HTTP 8MB、长连接 6MB）/定时（2s）触发，
 ///   单批 ≤500 条（契约）；上传失败直接丢弃批次、不重传（需求 ）。
 /// - 全局注册/注销 `MockNetPackURLProtocol`。
 final class TrafficCaptureController: @unchecked Sendable {
@@ -34,14 +34,15 @@ final class TrafficCaptureController: @unchecked Sendable {
 
     /// 长连接独立额度（默认 1000 条，可注入便于测试）；超限丢最旧（rolling window）。
     var maxLongConnEntries = 1000
-    /// 长连接 payload 完整保留上限（10KB）；超限仅存预览。
-    let maxLongConnPayloadBytes = 10 * 1024
-    /// 长连接 payload 预览上限（1KB，残留小项默认值）。
-    let maxLongConnPreviewBytes = 1024
+    /// 长连接 payload 保留上限（50KB = 51200 字节）；超限保留前 51200 字节前缀
+    /// （text 按有效 UTF-8 前缀、base64 按解码后原始字节重编码），不清空原字段。
+    let maxLongConnPayloadBytes = 50 * 1024
     /// 长连接单批条数阈值（≤500 契约上限，与 HTTP 同留余量 200）。
     let maxLongConnBatchCount = 200
-    /// 长连接单批字节阈值（避免超服务端 10MB 请求体上限）。
-    let maxLongConnBatchBytes = 8 * 1024 * 1024
+    /// 长连接单批字节阈值。估算值不含 JSON 转义与信封开销（50KB 文本里的引号、
+    /// 换行、base64 里的 "/" 都会被转义放大），故留出约 4MB 余量，避免整批撞上
+    /// 服务端 10MB 请求体上限被丢弃；单批条数仍由 200 条阈值兜底。
+    let maxLongConnBatchBytes = 6 * 1024 * 1024
     /// snapshot 30s 兜底：距上次 snapshot 上报超过该时长且存在缓存
     /// 快照时，随下一批次补发一条（状态变化立即上报由业务侧注入保证）。
     /// var 可注入便于单测（默认 30s）。
@@ -427,7 +428,8 @@ final class TrafficCaptureController: @unchecked Sendable {
 
     /// 注入一条长连接记录（业务侧桥接层调用；线程安全）。
     /// 语义：独立缓冲与独立额度（默认 1000 条，超限丢最旧，
-    /// 不占用 HTTP 流量额度）；payload 完整保留 ≤10KB、超限仅存预览 ≤1KB；
+    /// 不占用 HTTP 流量额度）；payload ≤50KB 原样保留，超限在 payloadText /
+    /// payloadBase64 中保留前 50KB 前缀（不再降级为 1KB 预览）；
     /// snapshot 事件立即入队并缓存为 30s 兜底补发源；心跳等事件不逐条合并，
     /// 随 snapshot 周期性可见。仅 capturing 且开关开启时入队。
     func recordLongConnection(_ record: LongConnectionRecordInput) {
@@ -504,25 +506,43 @@ final class TrafficCaptureController: @unchecked Sendable {
         }
     }
 
-    /// payload 截断：完整保留 ≤10KB；超限仅存预览（≤1KB），
-    /// 原 payload 字段清空。text 优先（三选一），base64 按长度估算字节。
+    /// payload 截断：≤50KB（51200 字节）原样保留；超限保留前 51200 字节前缀，
+    /// 仍写入原字段（payloadText / payloadBase64），不再生成 1KB 预览、不清空字段。
+    /// text 优先（三选一）：按字节取前缀但不切坏多字节字符（不引入 U+FFFD 替换字符）；
+    /// base64 按解码后原始字节数判断，前缀重新编码为合法 base64（不直接截字符串）；
+    /// base64 无法解码时无从计算原始字节数，保持原样（不静默清空、不伪造数据）。
     private func truncateLongConnPayload(_ r: inout LongConnectionRecordInput) {
         if let text = r.payloadText, text.utf8.count > maxLongConnPayloadBytes {
-            r.payloadPreview = String(decoding: text.utf8.prefix(maxLongConnPreviewBytes), as: UTF8.self)
-            r.payloadText = nil
+            r.payloadText = Self.utf8Prefix(text, maxBytes: maxLongConnPayloadBytes)
         } else if let b64 = r.payloadBase64,
-                  b64.utf8.count * 3 / 4 > maxLongConnPayloadBytes {
-            // 预览截断为前 maxLongConnPreviewBytes 原始字节对应的 base64 长度。
-            r.payloadPreview = String(String(b64).prefix(maxLongConnPreviewBytes * 4 / 3))
-            r.payloadBase64 = nil
+                  let raw = Data(base64Encoded: b64),
+                  raw.count > maxLongConnPayloadBytes {
+            r.payloadBase64 = raw.prefix(maxLongConnPayloadBytes).base64EncodedString()
         }
     }
 
+    /// 取不超过 maxBytes 字节的 UTF-8 前缀，且只在完整 Unicode 标量边界切分
+    /// （入参是 Swift String，本身为合法 UTF-8，只需回退被切断的末尾字节）。
+    private static func utf8Prefix(_ text: String, maxBytes: Int) -> String {
+        let utf8 = text.utf8
+        guard utf8.count > maxBytes else { return text }
+        var end = utf8.index(utf8.startIndex, offsetBy: maxBytes)
+        while end > utf8.startIndex {
+            if let prefix = String(bytes: utf8[utf8.startIndex..<end], encoding: .utf8) {
+                return prefix
+            }
+            end = utf8.index(before: end)
+        }
+        return ""
+    }
+
     /// 长连接记录字节估算（入队计数用；与 HTTP 的估算口径独立）。
+    /// base64 在请求体里以字符形式存在，按其字符长度计（按解码后字节数折算会
+    /// 低估约 25%，50KB 上限下单批可能超出服务端 10MB 请求体上限被整批丢弃）。
     private func estimateLongConnBytes(_ r: LongConnectionRecordInput) -> Int {
         var n = 256
         n += r.payloadText?.utf8.count ?? 0
-        n += (r.payloadBase64?.utf8.count ?? 0) * 3 / 4
+        n += r.payloadBase64?.utf8.count ?? 0
         n += r.payloadPreview?.utf8.count ?? 0
         return n
     }

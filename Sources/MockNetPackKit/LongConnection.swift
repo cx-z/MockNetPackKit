@@ -6,7 +6,7 @@ import Foundation
 // 本文件定义「类型 + API 签名」与采集入口：
 //   LongConnectionRecordInput（必填 ≤4：channelId/eventType/ts + payload 三选一）、
 //   LongConnectionCollector（通道注册 + 采集开关 + record 入口壳）。
-// 采集实现（缓冲、独立额度 1000、payload 截断 10KB/预览 1KB、snapshot 合并 30s 兜底、
+// 采集实现（缓冲、独立额度 1000、payload 截断 50KB（超限保留前缀）、snapshot 合并 30s 兜底、
 // 攒批上报 type=longconn）位于 TrafficCaptureController。
 // ============================================================================
 
@@ -141,7 +141,9 @@ public struct LongConnectionRecordInput: Codable, Sendable {
     public var payloadText: String? = nil
     /// 二进制 payload 的 base64（无法文本化时）；三选一之一。
     public var payloadBase64: String? = nil
-    /// 截断预览（payload 超 10KB 时仅存预览 ≤1KB）；三选一之一。
+    /// 旧版截断预览（历史日志兼容；旧策略下 payload 超 10KB 时仅存 ≤1KB 预览）。
+    /// 当前采集策略不再生成该字段：超 50KB 时前缀仍写入 payloadText /
+    /// payloadBase64。保留字段与构造参数只为兼容已有调用方与旧日志展示。
     public var payloadPreview: String? = nil
     /// 方向；默认 `in`（仅 in + 生命周期事件）。
     public var direction: LongConnectionDirection = .`in`
@@ -229,7 +231,7 @@ struct LongConnUploadResponse: Decodable {
 /// 长连接采集控制器。
 ///
 /// 职责：通道注册表（多框架共存）；采集入口转发到 TrafficCaptureController
-/// （缓冲、独立额度 1000、payload 截断 10KB/预览 1KB、snapshot 合并
+/// （缓冲、独立额度 1000、payload 截断 50KB（超限保留前缀）、snapshot 合并
 /// 30s 兜底、攒批上报 type=longconn 均在其上实现，与 HTTP 流量互不干扰）。
 final class LongConnectionCollector: @unchecked Sendable {
 
