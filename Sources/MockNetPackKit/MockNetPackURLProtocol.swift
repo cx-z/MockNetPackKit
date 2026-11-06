@@ -28,6 +28,35 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     /// 转发用 URLSessionConfiguration 注入点：测试用 MockURLProtocol 模拟真实网络。
     nonisolated(unsafe) static var forwardingConfiguration: URLSessionConfiguration?
 
+    // MARK: - 302 回放放行缓存
+
+    /// 302/301/303/307/308 回放后短期放行 Location URL，避免 App 跟随重定向时被
+    /// SDK 再次拦截造成死循环。key = URL.absoluteString，value = 加入时间。
+    /// 线程安全由 redirectWhitelistLock 保护。
+    nonisolated(unsafe) private static var redirectWhitelist: [String: Date] = [:]
+    private static let redirectWhitelistLock = NSLock()
+    /// 放行缓存 TTL（秒）。App 跟随 302 通常在毫秒级内完成；5 秒足够覆盖正常
+    /// 重定向生命周期，同时避免长期放行新的真实请求。
+    static let redirectWhitelistTTL: TimeInterval = 5
+
+    /// 把 URL 加入短期放行缓存（302 回放时调用）。
+    static func addRedirectWhitelist(urlString: String) {
+        redirectWhitelistLock.lock()
+        defer { redirectWhitelistLock.unlock() }
+        // 顺便清理过期条目，避免缓存无限增长。
+        let now = Date()
+        redirectWhitelist = redirectWhitelist.filter { now.timeIntervalSince($0.value) < redirectWhitelistTTL }
+        redirectWhitelist[urlString] = now
+    }
+
+    /// 检查 URL 是否在放行缓存中（未过期）。
+    static func isWhitelisted(urlString: String) -> Bool {
+        redirectWhitelistLock.lock()
+        defer { redirectWhitelistLock.unlock() }
+        guard let added = redirectWhitelist[urlString] else { return false }
+        return Date().timeIntervalSince(added) < redirectWhitelistTTL
+    }
+
     // MARK: - URLProtocol
 
     /// 仅接管启动握手或有效会话中的 HTTP，SDK 自身请求始终放行。
@@ -38,6 +67,10 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         }
         // SDK 自身请求（心跳/注册/上传）不拦截。
         if request.value(forHTTPHeaderField: skipHeader) != nil { return false }
+        // 302 回放跟随的请求短期放行，避免死循环。
+        if let urlString = request.url?.absoluteString, isWhitelisted(urlString: urlString) {
+            return false
+        }
         return true
     }
 
@@ -58,24 +91,37 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     private let captureGeneration: UInt64?
     /// stopLoading 置位：Mock delay 等待期间被取消则不再回包、不再记录流量。
     private var cancelled = false
+    /// 终态记录器：独立于本实例持有记录快照，避免 stopLoading 后实例释放导致超时/取消漏记。
+    private let recorder: TrafficTerminalRecorder?
 
+    /// 懒创建全局共享转发 session；创建前标记该配置为"SDK 自身转发"，
+    /// 让会话级兜底注入跳过它，避免转发请求被拦截器再次拦截形成递归。
     private static func sharedSession() -> URLSession {
         sessionLock.lock()
         defer { sessionLock.unlock() }
         if let s = sharedForwardingSession { return s }
         let config = forwardingConfiguration ?? defaultForwardingConfiguration()
+        URLSessionConfigurationInjector.markAsForwardingSession(config)
         let s = URLSession(configuration: config)
         sharedForwardingSession = s
         return s
     }
 
-    /// 绑定采集代次并在系统预读前保存请求体；之后的会话变更只影响记录，不中断业务转发。
+    /// 绑定采集代次并在系统预读前保存请求体，同时创建独立终态记录器；
+    /// 之后的会话变更只影响记录，不中断业务转发。
     override init(request: URLRequest, cachedResponse: CachedURLResponse?, client: URLProtocolClient?) {
         self.captureGeneration = TrafficCaptureController.shared.httpCaptureGeneration
         //  修复：在 init 阶段就读 stream，此时 stream 还未被 URLSession 预读。
         var rq = request
         let body = Self.readBody(of: request, rewriting: &rq)
         self.capturedBody = body
+        self.recorder = TrafficTerminalRecorder(
+            startTime: Date(),
+            request: request,
+            requestBody: body,
+            captureGeneration: self.captureGeneration,
+            controller: TrafficCaptureController.shared
+        )
         super.init(request: rq, cachedResponse: cachedResponse, client: client)
     }
 
@@ -107,9 +153,10 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
 
         let session = Self.sharedSession()
 
-        let task = session.dataTask(with: forwarded) { [weak self] data, response, error in
+        let task = session.dataTask(with: forwarded) { [weak self, recorder] data, response, error in
+            // 终态记录不依赖 self：原请求超时/取消时 protocol 已先释放，弱引用会让整条记录丢失。
+            recorder?.finish(response: response, data: data, error: error)
             guard let self else { return }
-            self.record(bodyData: bodyData, data: data, response: response, error: error)
 
             if let response {
                 self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -127,10 +174,23 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         task.resume()
     }
 
+    /// 原请求超时或取消时由 URL 加载系统调用：标记中止原因并取消转发任务，
+    /// 记录由转发完成回调落库（1s 兜底防极端情况下不回调）；Mock 路径不产生终态记录。
     override func stopLoading() {
         cancelled = true
-        forwardingTask?.cancel()
-        // 注意：不 invalidate 全局共享 session，否则会杀掉所有在飞的转发连接。
+        // 只有真正转发过的请求才有"客户端中止"终态；Mock 回包路径取消由 serve 自身处理，
+        // 不生成流量记录（保持既有语义）。
+        guard let forwardingTask, let recorder else {
+            // 注意：不 invalidate 全局共享 session，否则会杀掉所有在飞的转发连接。
+            return
+        }
+        // 先标记客户端中止并推断超时/取消，再取消转发任务；记录由转发完成回调兜底落库。
+        recorder.markClientAborted(at: Date())
+        forwardingTask.cancel()
+        // 兜底：共享 session 被系统回收等极端情况下转发任务可能不再回调，1s 后强制补一条终态。
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) {
+            recorder.finishWithoutCompletion()
+        }
     }
 
     // MARK: - Mock 回包
@@ -154,6 +214,22 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         let response = HTTPURLResponse(
             url: url, statusCode: mock.statusCode,
             httpVersion: "HTTP/1.1", headerFields: headerFields)
+
+        // 302 回放死循环修复：回放 3xx 重定向时，把 Location URL 加入短期放行缓存，
+        // App 跟随重定向到该 URL 时 canInit 直接放行，不再匹配规则，避免无限 302 循环。
+        // 注意：在 fire closure 里打标（实际投递时），而不是 serve() 阶段——否则
+        // delayMs > 0 时 TTL 从 serve() 开始算，302 还没送到 App 缓存就过期了。
+        // Location header 查找大小写不敏感（HTTP header 名本就大小写不敏感，
+        // 历史快照里 key 可能是 location/Location/LOCATION）。
+        let redirectCodes: Set<Int> = [301, 302, 303, 307, 308]
+        let redirectLocation: String? = {
+            guard redirectCodes.contains(mock.statusCode) else { return nil }
+            // 大小写不敏感查找 Location header。
+            for (key, value) in headerFields where key.lowercased() == "location" {
+                return value
+            }
+            return nil
+        }()
         //  回放三级 fallback：
         // ① bodyBase64 有原始字节 → 按原始字节回放（未编辑的二进制规则，"Mock 此请求"直接启用）
         // ② body 有编辑过的文本 + encoder 可用 → 编码回私有二进制协议字节（Web 编辑生效）
@@ -223,6 +299,14 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
                 self.client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
                 return
             }
+            // 实际投递 3xx 响应时，才把 Location URL 加入放行缓存。
+            // TTL 从投递时刻开始算，与 delayMs 解耦；取消投递则不打标。
+            if let location = redirectLocation, !location.isEmpty {
+                let resolvedURL = URL(string: location, relativeTo: url) ?? URL(string: location)
+                if let resolved = resolvedURL?.absoluteString {
+                    Self.addRedirectWhitelist(urlString: resolved)
+                }
+            }
             self.deliverMockResponse(response: response, data: data)
         }
         if delay > 0 {
@@ -240,55 +324,6 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             client?.urlProtocol(self, didLoad: data)
         }
         client?.urlProtocolDidFinishLoading(self)
-    }
-
-    // MARK: - 采集
-
-    /// 组装 TrafficEntry 并按请求创建时的代次交给采集器，拒绝跨会话的迟到回包。
-    private func record(bodyData: Data?, data: Data?, response: URLResponse?, error: Error?) {
-        let durationMs = max(0, Int(Date().timeIntervalSince(startTime) * 1000))
-        let http = response as? HTTPURLResponse
-
-        var headers: [String: [String]] = [:]
-        for (key, value) in request.allHTTPHeaderFields ?? [:] {
-            headers[key] = [value]
-        }
-
-        let reqParts = Self.bodyParts(bodyData)
-        let respParts = data.map(Self.bodyParts)
-        var entry = TrafficEntry(
-            timestamp: startTime,
-            method: request.httpMethod ?? "GET",
-            url: request.url?.absoluteString ?? "",
-            path: request.url?.path ?? "",
-            query: request.url?.query ?? "",
-            requestHeaders: headers,
-            requestBody: reqParts.text,
-            requestBodyBase64: reqParts.base64,
-            statusCode: http?.statusCode,
-            responseHeaders: http.map { Self.headerFields($0.allHeaderFields) },
-            responseBody: respParts?.text,
-            responseBodyBase64: respParts?.base64,
-            error: error?.localizedDescription,
-            durationMs: durationMs
-        )
-        // 失败请求不保留状态码/响应字段（契约：statusCode 等为空）。
-        if error != nil {
-            entry.statusCode = nil
-            entry.responseHeaders = nil
-            entry.responseBody = nil
-            entry.responseBodyBase64 = nil
-        } else if let raw = data, !raw.isEmpty {
-            // ：调 App 注入的解码器把二进制私有协议解成可读文本（仅展示）。
-            entry.responseBodyDecoded = Self.decodedBody(raw, contentType: http?.value(forHTTPHeaderField: "Content-Type"))
-        }
-        // ：请求体同样经解码器解出可读文本（仅展示；失败/无解码器则 nil）。
-        if let bodyData, !bodyData.isEmpty {
-            entry.requestBodyDecoded = Self.decodedBody(bodyData, contentType: request.value(forHTTPHeaderField: "Content-Type"), isRequest: true)
-        }
-        if let captureGeneration {
-            TrafficCaptureController.shared.record(entry, generation: captureGeneration)
-        }
     }
 
     // MARK: - 辅助
@@ -341,7 +376,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     /// 响应头（HTTPURLResponse 的 [AnyHashable: Any] → [String: [String]]）。
-    private static func headerFields(_ fields: [AnyHashable: Any]) -> [String: [String]] {
+    static func headerFields(_ fields: [AnyHashable: Any]) -> [String: [String]] {
         var out: [String: [String]] = [:]
         for (key, value) in fields {
             guard let k = key as? String else { continue }

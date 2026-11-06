@@ -8,7 +8,7 @@ import os
 ///   驱动；首次心跳前有界暂存 HTTP 流量，有会话则上传，无会话则丢弃。
 ///   capturing 时正常采集，idle 时停止并清空待上传批次
 ///   （会话结束本地未上传的临时记录一并丢弃，与服务端"临时记录随会话清空"一致）。
-/// - 攒批上传：按条数阈值（200）/字节阈值（HTTP 8MB、长连接 6MB）/定时（2s）触发，
+/// - 攒批上传：按条数阈值（200）/字节阈值（HTTP 会话 6MB、启动暂存 9MB、长连接 6MB）/定时（2s）触发，
 ///   单批 ≤500 条（契约）；上传失败直接丢弃批次、不重传（需求 ）。
 /// - 全局注册/注销 `MockNetPackURLProtocol`。
 final class TrafficCaptureController: @unchecked Sendable {
@@ -27,8 +27,11 @@ final class TrafficCaptureController: @unchecked Sendable {
 
     /// 单批条数阈值（≤500 契约上限，留余量）。
     let maxBatchCount = 200
-    /// 单批字节阈值（避免超服务端 10MB 请求体上限）。
-    let maxBatchBytes = 8 * 1024 * 1024
+    /// 单批字节阈值：按上传时的真实 JSON 体积计数，并低于服务端 10MB 请求体上限留足余量。
+    /// 可注入以便测试精确的 base64 体积口径。
+    var maxBatchBytes = 6 * 1024 * 1024
+    /// 启动暂存期上限：没有会话可切批，允许高于单批软阈值，但必须整体低于服务端 10MB。
+    let maxStartupBytes = 9 * 1024 * 1024
 
     // MARK: - 长连接阈值（独立额度，不占用 HTTP 流量额度）
 
@@ -390,24 +393,55 @@ final class TrafficCaptureController: @unchecked Sendable {
 
     // MARK: - 采集与攒批
 
-    /// 按请求代次记录 HTTP；启动暂存复用 200 条/8MB 上限，超限丢新条目，保留最早请求。
+    /// 按请求代次记录 HTTP；启动暂存 200 条 / 9MB（无会话可切批），
+    /// 会话内按真实 JSON 体积 200 条 / 6MB 切批，超限切批而非静默丢弃。
     /// generation 由 URLProtocol 在创建时取得；省略仅供内部直接记录/测试使用。
     func record(_ entry: TrafficEntry, generation: UInt64? = nil) {
+        // 先做一次轻量状态快照：会话切走/闲置后仍在飞的条目直接丢弃，
+        // 不必为它们付出完整 JSON 编码（单条可达数 MB）的成本。
         lock.lock()
+        let accepted = running && (capturingValue || startupBufferingValue)
+            && (generation == nil || generation == httpGeneration)
+        lock.unlock()
+        guard accepted else { return }
+
+        // 体积编码放在锁外：持锁编码会让其它采集线程（含长连接入队）排在它后面。
+        let encodedSize = Self.encodedSize(entry)
+        lock.lock()
+        // 编码期间状态可能变化（会话切走会作废旧代次），入队前重新校验。
         guard running, capturingValue || startupBufferingValue,
-              generation == nil || generation == httpGeneration else { lock.unlock(); return }
-        let bytes: Int
-        if startupBufferingValue {
-            // 含 base64、解码文本和 headers 的完整序列化大小，避免只算正文导致暂存无界。
-            guard pending.count < maxBatchCount,
-                  let size = try? JSONEncoder().encode(entry).count,
-                  size <= maxBatchBytes - pendingBytes else { lock.unlock(); return }
-            bytes = size
-        } else {
-            bytes = entry.requestBody.utf8.count + (entry.responseBody?.utf8.count ?? 0) + 256
+              generation == nil || generation == httpGeneration else {
+            lock.unlock()
+            return
         }
+        // 统一按上传时的真实 JSON 体积计数（含 base64 / 转义 / headers），
+        // 不能只算正文，否则图片请求体会在服务端 10MB 上限处被整批 413 拒绝。
+        guard let size = encodedSize else {
+            lock.unlock()
+            return
+        }
+        // 预算不足时先把已攒的批次切出去，再让本条进入新批次，避免静默丢条目。
+        // 启动暂存期没有会话可 flush（flush 会 no-op），沿用"保留最早、丢弃最新"的上限语义，
+        // 否则 flush 无法清空缓冲会造成无限重试。
+        let budget = startupBufferingValue ? maxStartupBytes : maxBatchBytes
+        let needsDetach = pending.count >= maxBatchCount || size > budget - pendingBytes
+        if needsDetach {
+            if startupBufferingValue {
+                lock.unlock()
+                return
+            }
+            lock.unlock()
+            flush()
+            lock.lock()
+            guard running, capturingValue || startupBufferingValue,
+                  generation == nil || generation == httpGeneration else {
+                lock.unlock()
+                return
+            }
+        }
+        // flush 未能清空（例如刚切到非 capturing）时本条仍入队，待会话可用后一并切批。
         pending.append(entry)
-        pendingBytes += bytes
+        pendingBytes += size
         let count = pending.count
         let tooMany = count >= maxBatchCount
         let tooBig = pendingBytes >= maxBatchBytes
@@ -416,6 +450,14 @@ final class TrafficCaptureController: @unchecked Sendable {
         if tooMany || tooBig {
             flush()
         }
+    }
+
+    /// 计算一条流量真正上传时的 JSON 字节数（日期编码与 ConnectionClient 一致，均为 iso8601）。
+    /// 用于攒批阈值与暂存上限，避免估算口径与线上请求体不一致。
+    static func encodedSize(_ entry: TrafficEntry) -> Int? {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return (try? encoder.encode(entry))?.count
     }
 
     // MARK: - 长连接采集

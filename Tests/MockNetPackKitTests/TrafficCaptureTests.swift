@@ -17,6 +17,7 @@ final class TrafficCaptureTests: XCTestCase {
     override func setUp() {
         super.setUp()
         MockURLProtocol.handler = nil
+        MockURLProtocol.deferredHandler = nil
         MockURLProtocol.recordedRequests.removeAll()
         MockNetPackURLProtocol.forwardingConfiguration = nil
 
@@ -607,6 +608,326 @@ final class TrafficCaptureTests: XCTestCase {
         }
         // 容忍 readBodyTimeout=2s + 调度余量；修复前会无限挂起 → wait 超时失败。
         wait(for: [exp], timeout: 8)
+    }
+
+    // MARK: - 终态记录（超时/取消不再漏记）
+
+    /// 启动抓包并构造"业务请求被扣住、上传正常回包"的转发环境。
+    /// - Returns: 已启动的控制器，供用例追加断言/清理。
+    private func startTerminalCapture() -> TrafficCaptureController {
+        let controller = TrafficCaptureController.shared
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-terminal")
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/traffic") == true {
+                return jsonResponse(202, json: ["accepted": true, "count": 1])
+            }
+            return jsonResponse(200, json: ["ok": true])
+        }
+        // 只扣住业务 PUT：模拟"服务端不响应"，让请求级超时/取消由客户端触发。
+        MockURLProtocol.deferredHandler = { transport in
+            transport.request.url?.path == "/slow-put"
+        }
+        return controller
+    }
+
+    /// 读取已上传的流量条目（等待上传请求出现后解析第一段 entries）。
+    private func uploadedEntries() -> [[String: Any]] {
+        guard let upload = MockURLProtocol.recordedRequests.first(where: { $0.url?.path.hasSuffix("/traffic") == true }),
+              let body = bodyOfRequest(upload),
+              let entries = body["entries"] as? [[String: Any]] else {
+            return []
+        }
+        return entries
+    }
+
+    /// 回归：请求级超时后原任务先 stopLoading、protocol 实例释放，转发回调仍须落一条终态。
+    /// 修复前该条记录随 [weak self] 丢失（本地探针稳定复现）。
+    func testTimedOutForwardedRequestStillRecordsTerminalEntry() {
+        let controller = startTerminalCapture()
+
+        let clientConfig = URLSessionConfiguration.ephemeral
+        clientConfig.protocolClasses = [MockNetPackURLProtocol.self]
+        let session = URLSession(configuration: clientConfig)
+        var req = URLRequest(url: URL(string: "https://oss.example.com/slow-put")!)
+        req.httpMethod = "PUT"
+        req.timeoutInterval = 0.5
+        req.httpBody = Data(repeating: 0xAB, count: 64 * 1024)
+
+        let exp = expectation(description: "client times out")
+        session.dataTask(with: req) { _, _, error in
+            XCTAssertEqual((error as NSError?)?.code, NSURLErrorTimedOut)
+            exp.fulfill()
+        }.resume()
+        wait(for: [exp], timeout: 3)
+
+        controller.flush()
+        waitUntil { MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true } }
+        let entries = uploadedEntries()
+        XCTAssertEqual(entries.count, 1, "超时请求必须恰好落一条终态")
+        let entry = entries.first
+        XCTAssertEqual(entry?["terminalStage"] as? String, "clientTimeout")
+        XCTAssertEqual(entry?["errorDomain"] as? String, NSURLErrorDomain)
+        XCTAssertEqual(entry?["errorCode"] as? Int, NSURLErrorTimedOut)
+        // 两条路径都合法：stopLoading 先到 → 推断（true）；转发任务先报 -1001 → 观测（nil）。
+        // 确定性的推断/观测标记分别由 recorder 层用例覆盖，这里只排除"被记成非超时"。
+        XCTAssertNotEqual(entry?["timeoutInferred"] as? Bool, false)
+        XCTAssertEqual(entry?["clientAbort"] as? Bool, true)
+        XCTAssertEqual(entry?["clientAbortReason"] as? String, "timeout")
+        XCTAssertNil(entry?["statusCode"], "没有 HTTP 响应时不得伪造状态码")
+        // 上界用于区分"转发完成回调立即落库"与"1s 兜底定时器补记"：兜底会多出约 1s。
+        XCTAssertGreaterThanOrEqual(entry?["durationMs"] as? Int ?? 0, 500)
+        XCTAssertLessThan(entry?["durationMs"] as? Int ?? 0, 1000)
+    }
+
+    /// 回归：配置在注入生效前创建（protocolClasses 被清空）时，会话级兜底注入仍应接手，
+    /// 超时 PUT 依旧落一条 clientTimeout 终态；没有兜底时会直接走真实网络、一条都不记。
+    func testTimedOutPutThroughStaleConfigurationStillRecords() {
+        let controller = startTerminalCapture()
+
+        let clientConfig = URLSessionConfiguration.ephemeral
+        // 模拟"早于注入创建、未携带拦截器"的长生命周期配置。
+        clientConfig.protocolClasses = []
+        let session = URLSession(configuration: clientConfig)
+        var req = URLRequest(url: URL(string: "https://oss.example.com/slow-put")!)
+        req.httpMethod = "PUT"
+        req.timeoutInterval = 0.5
+        req.httpBody = Data(repeating: 0xAB, count: 64 * 1024)
+
+        let exp = expectation(description: "client times out")
+        session.dataTask(with: req) { _, _, error in
+            XCTAssertEqual((error as NSError?)?.code, NSURLErrorTimedOut)
+            exp.fulfill()
+        }.resume()
+        wait(for: [exp], timeout: 3)
+
+        controller.flush()
+        waitUntil { MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true } }
+        let entries = uploadedEntries()
+        XCTAssertEqual(entries.count, 1, "兜底注入后超时请求必须恰好落一条终态")
+        let entry = entries.first
+        XCTAssertEqual(entry?["terminalStage"] as? String, "clientTimeout")
+        XCTAssertEqual(entry?["method"] as? String, "PUT")
+        XCTAssertNil(entry?["statusCode"], "没有 HTTP 响应时不得伪造状态码")
+    }
+
+    /// 回归：客户端主动取消同样落一条终态并标记 cancelled，且不因取消/完成竞争重复。
+    func testCancelledForwardedRequestRecordsSingleTerminalEntry() {
+        let controller = startTerminalCapture()
+
+        let clientConfig = URLSessionConfiguration.ephemeral
+        clientConfig.protocolClasses = [MockNetPackURLProtocol.self]
+        let session = URLSession(configuration: clientConfig)
+        var req = URLRequest(url: URL(string: "https://oss.example.com/slow-put")!)
+        req.httpMethod = "PUT"
+        req.timeoutInterval = 30
+
+        let exp = expectation(description: "client cancelled")
+        let task = session.dataTask(with: req) { _, _, error in
+            XCTAssertEqual((error as NSError?)?.code, NSURLErrorCancelled)
+            exp.fulfill()
+        }
+        task.resume()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { task.cancel() }
+        wait(for: [exp], timeout: 3)
+
+        controller.flush()
+        // 兜底定时器（+1s）可能再补，等待其收敛后断言仍只有一条。
+        RunLoop.current.run(until: Date().addingTimeInterval(1.2))
+        controller.flush()
+        waitUntil { MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true } }
+        let entries = uploadedEntries()
+        XCTAssertEqual(entries.count, 1, "取消只能有一条终态，不得与完成回调重复")
+        let entry = entries.first
+        XCTAssertEqual(entry?["terminalStage"] as? String, "clientCancelled")
+        XCTAssertEqual(entry?["clientAbortReason"] as? String, "cancelled")
+        XCTAssertEqual(entry?["errorCode"] as? Int, NSURLErrorCancelled)
+        XCTAssertLessThan(entry?["durationMs"] as? Int ?? 0, 800, "取消终态应来自完成回调而非兜底定时器")
+    }
+
+    /// 终态分类：`stopLoading` 标记的截止点中止 → -1001 为推断值（timeoutInferred=true）。
+    func testDeadlineAbortMarksTimeoutAsInferred() {
+        let controller = startTerminalCapture()
+        let start = Date()
+        var req = URLRequest(url: URL(string: "https://oss.example.com/recorder-put")!)
+        req.httpMethod = "PUT"
+        req.timeoutInterval = 0.5
+        let recorder = TrafficTerminalRecorder(
+            startTime: start, request: req, requestBody: nil,
+            captureGeneration: controller.httpCaptureGeneration, controller: controller)
+        recorder.markClientAborted(at: start.addingTimeInterval(0.5))
+        recorder.finish(response: nil, data: nil, error: URLError(.cancelled))
+
+        controller.flush()
+        waitUntil { MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true } }
+        let entry = uploadedEntries().first
+        XCTAssertEqual(entry?["terminalStage"] as? String, "clientTimeout")
+        XCTAssertEqual(entry?["timeoutInferred"] as? Bool, true, "截止点推断必须打推断标记")
+        XCTAssertEqual(entry?["errorCode"] as? Int, NSURLErrorTimedOut)
+        XCTAssertEqual(entry?["clientAbortReason"] as? String, "timeout")
+    }
+
+    /// 终态分类：转发任务实际观测到 -1001（`stopLoading` 尚未发生）→ 不标"推断"。
+    func testObservedForwarderTimeoutIsNotMarkedInferred() {
+        let controller = startTerminalCapture()
+        let start = Date()
+        var req = URLRequest(url: URL(string: "https://oss.example.com/recorder-put")!)
+        req.httpMethod = "PUT"
+        req.timeoutInterval = 0.5
+        let recorder = TrafficTerminalRecorder(
+            startTime: start, request: req, requestBody: nil,
+            captureGeneration: controller.httpCaptureGeneration, controller: controller)
+        recorder.finish(response: nil, data: nil, error: URLError(.timedOut))
+
+        controller.flush()
+        waitUntil { MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true } }
+        let entry = uploadedEntries().first
+        XCTAssertEqual(entry?["terminalStage"] as? String, "clientTimeout")
+        XCTAssertNil(entry?["timeoutInferred"], "观测到的 -1001 不是推断值")
+        XCTAssertEqual(entry?["errorCode"] as? Int, NSURLErrorTimedOut)
+        XCTAssertEqual(entry?["clientAbort"] as? Bool, true)
+    }
+
+    /// 观测优先：abortReason 已被判为取消，但转发任务实际报 -1001 → 改判超时且不打推断标记。
+    func testObservedTimeoutOverridesCancelledAbort() {
+        let controller = startTerminalCapture()
+        let start = Date()
+        var req = URLRequest(url: URL(string: "https://oss.example.com/recorder-put")!)
+        req.httpMethod = "PUT"
+        req.timeoutInterval = 30
+        let recorder = TrafficTerminalRecorder(
+            startTime: start, request: req, requestBody: nil,
+            captureGeneration: controller.httpCaptureGeneration, controller: controller)
+        // 远早于请求截止点 → 按中止时刻会判成 cancelled。
+        recorder.markClientAborted(at: start.addingTimeInterval(0.1))
+        recorder.finish(response: nil, data: nil, error: URLError(.timedOut))
+
+        controller.flush()
+        waitUntil { MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true } }
+        let entry = uploadedEntries().first
+        XCTAssertEqual(entry?["terminalStage"] as? String, "clientTimeout")
+        XCTAssertNil(entry?["timeoutInferred"], "观测到 -1001 时不是推断值")
+        XCTAssertEqual(entry?["clientAbortReason"] as? String, "timeout")
+        XCTAssertEqual(entry?["errorCode"] as? Int, NSURLErrorTimedOut)
+    }
+
+    /// 推断与观测同时存在（stopLoading 已到点 + 转发任务也报 -1001）→ 观测优先，仍不打推断标记。
+    func testObservedTimeoutSuppressesInferredFlag() {
+        let controller = startTerminalCapture()
+        let start = Date()
+        var req = URLRequest(url: URL(string: "https://oss.example.com/recorder-put")!)
+        req.httpMethod = "PUT"
+        req.timeoutInterval = 0.5
+        let recorder = TrafficTerminalRecorder(
+            startTime: start, request: req, requestBody: nil,
+            captureGeneration: controller.httpCaptureGeneration, controller: controller)
+        recorder.markClientAborted(at: start.addingTimeInterval(0.5))
+        recorder.finish(response: nil, data: nil, error: URLError(.timedOut))
+
+        controller.flush()
+        waitUntil { MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true } }
+        let entry = uploadedEntries().first
+        XCTAssertEqual(entry?["terminalStage"] as? String, "clientTimeout")
+        XCTAssertNil(entry?["timeoutInferred"], "已有真实 -1001 时不得再标推断")
+    }
+
+    /// 兜底路径：`stopLoading` 后转发任务始终不回调时，兜底恰好补一条；迟到的完成回调被 latch 忽略。
+    func testFallbackWithoutCompletionEmitsExactlyOneEntry() {
+        let controller = startTerminalCapture()
+        let start = Date()
+        var req = URLRequest(url: URL(string: "https://oss.example.com/recorder-put")!)
+        req.httpMethod = "PUT"
+        req.timeoutInterval = 30
+        let recorder = TrafficTerminalRecorder(
+            startTime: start, request: req, requestBody: nil,
+            captureGeneration: controller.httpCaptureGeneration, controller: controller)
+        recorder.markClientAborted(at: start)
+        recorder.finishWithoutCompletion()
+        // 迟到的真实回调不得再产生第二条终态。
+        recorder.finish(response: nil, data: nil, error: URLError(.cancelled))
+
+        controller.flush()
+        waitUntil { MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true } }
+        let entries = uploadedEntries()
+        XCTAssertEqual(entries.count, 1, "兜底与迟到回调只能产生一条终态")
+        XCTAssertEqual(entries.first?["terminalStage"] as? String, "clientCancelled")
+    }
+
+    /// 回归：连接失败保留真实错误域/码，不再只上报本地化文案。
+    func testConnectionFailureRecordsStructuredError() {
+        let controller = TrafficCaptureController.shared
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-terminal")
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/traffic") == true {
+                return jsonResponse(202, json: ["accepted": true, "count": 1])
+            }
+            throw URLError(.cannotConnectToHost)
+        }
+
+        let clientConfig = URLSessionConfiguration.ephemeral
+        clientConfig.protocolClasses = [MockNetPackURLProtocol.self]
+        let session = URLSession(configuration: clientConfig)
+        let exp = expectation(description: "connect fails")
+        session.dataTask(with: URL(string: "https://api.example.com/v1/users")!) { _, _, _ in
+            exp.fulfill()
+        }.resume()
+        wait(for: [exp], timeout: 3)
+
+        controller.flush()
+        waitUntil { MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true } }
+        let entries = uploadedEntries()
+        XCTAssertEqual(entries.count, 1)
+        let entry = entries.first
+        XCTAssertEqual(entry?["terminalStage"] as? String, "transportError")
+        XCTAssertEqual(entry?["errorDomain"] as? String, NSURLErrorDomain)
+        XCTAssertEqual(entry?["errorCode"] as? Int, NSURLErrorCannotConnectToHost)
+        XCTAssertFalse(entry?["timeoutInferred"] as? Bool ?? false)
+        XCTAssertNil(entry?["clientAbort"])
+    }
+
+    /// 回归：攒批阈值按真实 JSON 体积计数（含 base64）。旧实现只算正文，
+    /// 二进制条目会绕过阈值，最终超服务端 10MB 上限被整批拒绝。
+    func testBatchThresholdCountsBase64Bytes() {
+        let controller = TrafficCaptureController.shared
+        controller.start(serverURL: serverURL, appID: appID, did: did)
+        controller.updateSession(capturing: true, sessionID: "sess-batch")
+
+        let forwardConfig = URLSessionConfiguration.ephemeral
+        forwardConfig.protocolClasses = [MockURLProtocol.self]
+        MockNetPackURLProtocol.forwardingConfiguration = forwardConfig
+        MockURLProtocol.handler = { request in
+            jsonResponse(200, json: ["accepted": true, "count": 1])
+        }
+
+        let oldLimit = controller.maxBatchBytes
+        let oldInterval = controller.flushInterval
+        controller.maxBatchBytes = 200_000
+        controller.flushInterval = 60  // 排除定时器影响，只验证阈值触发
+        defer {
+            controller.maxBatchBytes = oldLimit
+            controller.flushInterval = oldInterval
+            controller.stop()
+        }
+
+        var entry = makeEntry(method: "PUT")
+        entry.requestBody = "[binary 160000 bytes]"
+        entry.requestBodyBase64 = Data(repeating: 0xCD, count: 160_000).base64EncodedString()
+        controller.record(entry)
+
+        // 真实 JSON 体积 ≈ 213KB > 200KB → 立即切批；旧口径只算 20 字节不会触发。
+        waitUntil { MockURLProtocol.recordedRequests.contains { $0.url?.path.hasSuffix("/traffic") == true } }
+        let entries = uploadedEntries()
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries.first?["method"] as? String, "PUT")
     }
 }
 

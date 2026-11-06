@@ -134,6 +134,24 @@ struct TrafficEntry: Encodable {
     /// 命中的规则 ID：仅 mocked=true 时非空，用于确认请求究竟
     /// 命中哪一条规则；真实流量为 nil。
     var matchedRuleId: String?
+    // MARK: - 终态结构化字段（新增可选字段，旧服务端/旧数据缺省为 nil）
+
+    /// 错误域（如 NSURLErrorDomain）；成功时为 nil。
+    var errorDomain: String?
+    /// 错误码（如 -1001 超时、-999 取消）；成功时为 nil。
+    var errorCode: Int?
+    /// 面向人读的终态错误描述：一般情况下取 NSError.localizedDescription；
+    /// 超时终态为合成的截止点说明（推断时前缀"请求超时（推断）"），与 error 的自由文本摘要互补。
+    var errorDescription: String?
+    /// 终态阶段：httpResponse / transportError / clientTimeout / clientCancelled。
+    var terminalStage: String?
+    /// 是否由客户端中止（超时或主动取消）结束。
+    var clientAbort: Bool?
+    /// 客户端中止原因：timeout / cancelled；仅 clientAbort=true 时存在。
+    var clientAbortReason: String?
+    /// 超时是否由 request.timeoutInterval 与中止时刻推断（true 表示错误码 -1001 为推断值；
+    /// 转发任务实际观测到 -1001 时为 nil，错误码是真实观测）。
+    var timeoutInferred: Bool?
 }
 
 /// 批量上传请求（契约 TrafficUploadRequest；单批 ≤500 条，由 SDK 攒批控制）。

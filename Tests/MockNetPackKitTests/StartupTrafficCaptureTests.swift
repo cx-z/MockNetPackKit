@@ -298,7 +298,7 @@ final class StartupTrafficCaptureTests: XCTestCase {
         startCapture()
         TrafficCaptureController.shared.record(entry("/first"))
         var oversized = entry("/oversized")
-        oversized.responseBodyBase64 = String(repeating: "A", count: TrafficCaptureController.shared.maxBatchBytes)
+        oversized.responseBodyBase64 = String(repeating: "A", count: TrafficCaptureController.shared.maxStartupBytes)
         TrafficCaptureController.shared.record(oversized)
         TrafficCaptureController.shared.record(entry("/last"))
         TrafficCaptureController.shared.updateSession(capturing: true, sessionID: "first-session")
@@ -350,6 +350,7 @@ final class StartupTrafficCaptureTests: XCTestCase {
         waitForUpload(count: 2)
         let batches = uploads.snapshot.compactMap { $0["entries"] as? [[String: Any]] }
         let paths = batches.map { $0.compactMap { $0["path"] as? String } }
+        // 启动暂存上限 9MB：8 条 1MB 级条目仍整批保留，激活条目独立成批。
         XCTAssertTrue(paths.contains((0..<8).map { "/startup/\($0)" }))
         XCTAssertTrue(paths.contains(["/binary-completion"]))
         XCTAssertTrue(uploads.byteCounts.allSatisfy { $0 < 10 * 1024 * 1024 })
