@@ -188,6 +188,21 @@ struct MockResponse: Codable, Equatable {
     /// 命中该回包的规则 ID（ P1-1：match 时填充，随命中流量上报
     /// matchedRuleId）。解码自服务端时不携带，仅本地匹配后设置。
     var ruleId: String?
+    /// 服务端存储的二进制回包（M15 大图字节治理）。存在时忽略 body/bodyBase64，
+    /// 回放前经 `RuleMediaCache` 按 ruleId 拉取原始字节。
+    /// 拉取失败（断网/404/尺寸不符）记一条 `error="media_unavailable"` 的命中流量
+    /// 后 **fail-open 转发真实请求**，不回落 body（大图规则 body 为空，回落只会
+    /// 把「空体」当成 mock 回包发给业务）。
+    /// 老服务端不下发该字段 → nil，走原有 body 三级 fallback。
+    var media: MediaRef?
+}
+
+/// 服务端 blob 引用（契约 MediaRef）：sha256 作本地 LRU 缓存 key，
+/// 规则编辑后字节变化 → 新 sha256 → 不会命中旧缓存。
+struct MediaRef: Codable, Equatable {
+    let sha256: String
+    let size: Int64
+    var contentType: String?
 }
 
 /// 一条设备级 Mock 规则（契约 MockRule）。SDK 侧只关心匹配与回包字段；

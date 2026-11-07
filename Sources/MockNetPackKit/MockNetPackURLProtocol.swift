@@ -137,11 +137,31 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         let method = request.httpMethod ?? "GET"
         let path = request.url?.path ?? ""
         if let mock = MockRuleController.shared.match(method: method, path: path) {
-            serve(mock: mock, method: method, path: path)
+            // M15：media 规则（大图）先异步取 blob——成功则回放原始字节；
+            // 失败（断网/404/尺寸不符）记一条带 error 的命中流量后 fail-open
+            // 转发真实请求，业务侧与「未命中规则」一致，绝不静默吞掉。
+            if let media = mock.media, let ruleID = mock.ruleId {
+                RuleMediaCache.shared.load(ruleID: ruleID, media: media) { [weak self] loaded in
+                    guard let self, !self.cancelled else { return }
+                    if let loaded {
+                        self.serve(mock: mock, method: method, path: path, mediaData: loaded)
+                    } else {
+                        self.recordMediaFailure(mock: mock, method: method, path: path)
+                        self.forwardRealRequest()
+                    }
+                }
+                return
+            }
+            serve(mock: mock, method: method, path: path, mediaData: nil)
             return
         }
 
-        // 请求体：init 阶段已抢读到 capturedBody。转发时重建 httpBody，保证不丢 body。
+        forwardRealRequest()
+    }
+
+    /// 转发原请求到真实网络（未命中规则 / media 取字节失败时的 fail-open 路径）。
+    /// 请求体：init 阶段已抢读到 capturedBody，转发时重建 httpBody，保证不丢 body。
+    private func forwardRealRequest() {
         var forwarded = request
         let bodyData = self.capturedBody
         if let bodyData = bodyData, forwarded.httpBody == nil {
@@ -195,13 +215,22 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
 
     // MARK: - Mock 回包
 
+    /// media 命中记录的展示占位：规则体为空时标明「原图由 blob 按需回放」，
+    /// 让请求流里这条 200 不再看起来像空响应（字节本身仍不进记录）。
+    private static func mediaPlaceholder(_ media: MediaRef?) -> String? {
+        guard let media, media.size > 0 else { return nil }
+        return "[原图 \(media.size) 字节，按需拉取]"
+    }
+
     /// 命中本地 Mock 规则：合成 HTTP 响应直接回给原请求者，不转发真实网络，
     /// 同时按请求代次记一条 mocked=true 的临时流量（会话结束随临时流量清空）。
-    private func serve(mock: MockResponse, method: String, path: String) {
+    private func serve(mock: MockResponse, method: String, path: String, mediaData: Data? = nil) {
         let url = request.url ?? URL(string: "http://localhost/")!
         var headerFields = mock.headers ?? [:]
         if headerFields["Content-Type"] == nil {
-            headerFields["Content-Type"] = "application/json"
+            // M15：media 规则以服务端记录的图片类型回包（服务端已写入 Content-Type，
+            // 此处是快照丢头的兜底），其余规则沿用历史默认 application/json。
+            headerFields["Content-Type"] = mock.media?.contentType ?? "application/json"
         }
         //  修复：删除动态密钥轮换 header（x-xc-proto-res）。
         // mock 快照是历史捕获的，其 x-xc-proto-res 是当时的旧密钥；
@@ -211,9 +240,11 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         headerFields = headerFields.filter { key, _ in
             !key.lowercased().contains("proto-res")
         }
+        // 冻结为常量再进入 @Sendable 投递闭包（Swift 6 不允许并发闭包引用可变 var）。
+        let responseHeaders = headerFields
         let response = HTTPURLResponse(
             url: url, statusCode: mock.statusCode,
-            httpVersion: "HTTP/1.1", headerFields: headerFields)
+            httpVersion: "HTTP/1.1", headerFields: responseHeaders)
 
         // 302 回放死循环修复：回放 3xx 重定向时，把 Location URL 加入短期放行缓存，
         // App 跟随重定向到该 URL 时 canInit 直接放行，不再匹配规则，避免无限 302 循环。
@@ -225,7 +256,7 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         let redirectLocation: String? = {
             guard redirectCodes.contains(mock.statusCode) else { return nil }
             // 大小写不敏感查找 Location header。
-            for (key, value) in headerFields where key.lowercased() == "location" {
+            for (key, value) in responseHeaders where key.lowercased() == "location" {
                 return value
             }
             return nil
@@ -237,16 +268,16 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         // 调整原因：未编辑二进制规则的 body 是 "[binary N bytes]" 占位文本（非空），
         // 若 encoder 优先会把占位文本编码回放导致 App 解析失败；编辑保存时 Web 本就清除
         // bodyBase64，因此原始字节优先不影响已编辑规则（它们已无 bodyBase64）。
-        let contentType = headerFields["Content-Type"]
-        let data: Data
+        let contentType = responseHeaders["Content-Type"]
+        let bodyData: Data
         if let b64 = mock.bodyBase64, let decoded = Data(base64Encoded: b64), !decoded.isEmpty {
-            data = decoded
+            bodyData = decoded
         } else if let text = mock.body, !text.isEmpty,
                   let encoder = TrafficCaptureController.shared.bodyEncoder,
                   let encoded = encoder(text, contentType) {
-            data = encoded
+            bodyData = encoded
         } else {
-            data = Data((mock.body ?? "").utf8)
+            bodyData = Data((mock.body ?? "").utf8)
         }
 
         // Mock 回包延迟：命中规则后等待 delayMs 毫秒再回包。
@@ -254,7 +285,9 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
         // record 与 client 三段回包都放在 fire 里：延迟期间被 stopLoading 取消时，
         // 既不回包也不留这条流量。
         let delay = mock.delayMs ?? 0
-        let fire: () -> Void = { [weak self] in
+        // M15：payload 由投递路径注入——非 media 规则恒为 bodyData，media 规则为拉到的
+        // blob 字节（拉取失败 fail-open 回落 bodyData）。fire 其余逻辑与既有完全一致。
+        let fire: @Sendable (Data) -> Void = { [weak self] payload in
             guard let self, !self.cancelled else { return }
 
             // 记录一条 Mock 命中流量。：同时捕获真实请求体（ 已知行为修复）。
@@ -277,8 +310,11 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
                 requestBodyBase64: reqParts.base64,
                 requestBodyDecoded: Self.decodedBody(reqBodyData, contentType: self.request.value(forHTTPHeaderField: "Content-Type"), isRequest: true),
                 statusCode: mock.statusCode,
-                responseHeaders: headerFields.mapValues { [$0] },
-                responseBody: mock.body,
+                responseHeaders: responseHeaders.mapValues { [$0] },
+                // M15：media 规则的字节只在服务端 blob 与缓存里，规则体是空的；
+                // 命中记录照抄 body 会与「空响应」完全不可区分，故写一句占位
+                // （与二进制规则的 "[binary N bytes]" 同一套约定），仅供展示。
+                responseBody: mock.body?.isEmpty == false ? mock.body : Self.mediaPlaceholder(mock.media),
                 responseBodyBase64: mock.bodyBase64,
                 error: nil,
                 durationMs: max(0, Int(Date().timeIntervalSince(self.startTime) * 1000)),
@@ -288,8 +324,8 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
             // mock 命中流量同样尝试解码展示（与真实抓包一致，仅展示；回放仍为
             // bodyBase64 原始字节）。二进制规则（"Mock 此请求"创建）未编辑时 body 是
             // "[binary N bytes]" 占位，补上解码文本后请求流里也能看到 JSON 详情。
-            if !data.isEmpty {
-                entry.responseBodyDecoded = Self.decodedBody(data, contentType: contentType)
+            if !payload.isEmpty {
+                entry.responseBodyDecoded = Self.decodedBody(payload, contentType: contentType)
             }
             if let generation = self.captureGeneration {
                 TrafficCaptureController.shared.record(entry, generation: generation)
@@ -307,12 +343,54 @@ final class MockNetPackURLProtocol: URLProtocol, @unchecked Sendable {
                     Self.addRedirectWhitelist(urlString: resolved)
                 }
             }
-            self.deliverMockResponse(response: response, data: data)
+            self.deliverMockResponse(response: response, data: payload)
         }
+        // M15：media 规则的字节由调用方先行取到（mediaData），优先级高于
+        // bodyBase64 > body；非 media 规则 mediaData 为 nil，行为零改动。
+        scheduleDelivery(delay: delay, fire: fire, data: mediaData ?? bodyData)
+    }
+
+    /// media 取字节失败：记一条带 error 的 mocked 命中流量（随后调用方 fail-open
+    /// 转发真实请求，转发路径会再记一条真实条目——两条各自可判别，便于 Web 侧
+    /// 看出「规则命中但字节没取到」）。
+    private func recordMediaFailure(mock: MockResponse, method: String, path: String) {
+        guard let generation = captureGeneration else { return }
+        let url = request.url ?? URL(string: "http://localhost/")!
+        let reqParts = Self.bodyParts(capturedBody)
+        var reqHeaders: [String: [String]] = [:]
+        for (key, value) in request.allHTTPHeaderFields ?? [:] {
+            reqHeaders[key] = [value]
+        }
+        let entry = TrafficEntry(
+            timestamp: startTime,
+            method: method,
+            url: url.absoluteString,
+            path: path,
+            query: url.query ?? "",
+            requestHeaders: reqHeaders,
+            requestBody: reqParts.text,
+            requestBodyBase64: reqParts.base64,
+            requestBodyDecoded: Self.decodedBody(capturedBody, contentType: request.value(forHTTPHeaderField: "Content-Type"), isRequest: true),
+            statusCode: mock.statusCode,
+            responseHeaders: (mock.headers ?? [:]).mapValues { [$0] },
+            responseBody: nil,
+            responseBodyBase64: nil,
+            error: "media_unavailable",
+            durationMs: max(0, Int(Date().timeIntervalSince(startTime) * 1000)),
+            mocked: true,
+            matchedRuleId: mock.ruleId
+        )
+        TrafficCaptureController.shared.record(entry, generation: generation)
+    }
+
+    /// 按 delayMs 安排投递：>0 走全局队列延迟、0 立即同步调用。
+    /// 抽出来供 media 异步拉取路径复用，保持既有语义（延迟期间被 stopLoading
+    /// 取消时既不回包也不留这条流量）。
+    private func scheduleDelivery(delay: Int, fire: @escaping @Sendable (Data) -> Void, data: Data) {
         if delay > 0 {
-            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(delay), execute: fire)
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(delay)) { fire(data) }
         } else {
-            fire()
+            fire(data)
         }
     }
 

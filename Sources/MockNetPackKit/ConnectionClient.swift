@@ -198,6 +198,37 @@ struct ConnectionClient: Sendable {
         }
     }
 
+    /// 发起 GET 并返回原始字节（M15：拉取 mock 规则的 binary body blob）。
+    /// 与 JSON get 相同：skipHeader 放行、2xx 即成功、非 2xx 抛 httpStatus。
+    func getData(_ path: String) async throws -> Data {
+        let base = baseURL.absoluteString.hasSuffix("/")
+            ? baseURL.absoluteString
+            : baseURL.absoluteString + "/"
+        guard let url = URL(string: base + path) else {
+            throw ConnectionClientError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = requestTimeout
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("1", forHTTPHeaderField: MockNetPackURLProtocol.skipHeader)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await perform(request)
+        } catch {
+            throw error
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw ConnectionClientError.httpStatus(-1)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw ConnectionClientError.httpStatus(http.statusCode)
+        }
+        return data
+    }
+
     /// 轻量可达性探测：GET 一个必然 404 的路径，收到任何 HTTP 响应
     /// （含 404）即视为连通——用于扫码连接前触发/验证 iOS「本地网络」权限
     /// （首次访问局域网地址的连接会因未授权被系统拒绝，传输层错误在此上抛）。

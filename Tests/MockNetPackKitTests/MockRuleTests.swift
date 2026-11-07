@@ -676,6 +676,29 @@ final class MockRuleTests: XCTestCase {
         XCTAssertEqual(resp.ruleId, "r1", "命中后 ruleId 由规则 id 填充（冷启动 matchedRuleId 上报依赖）")
     }
 
+    /// M15：media 引用要落盘（规则只带 sha256，字节不进快照）——冷启动回放不丢 media。
+    func testSnapshotRoundTripPreservesMediaRef() throws {
+        let store = MockRuleSnapshotStore(defaults: mockDefaults)
+        let ref = MediaRef(sha256: "abc123", size: 7_400_000, contentType: "image/png")
+        let rule = MockRule(
+            id: "r-media", method: "GET", path: "/img/big.png",
+            response: MockResponse(statusCode: 200,
+                headers: ["Content-Type": "image/png"],
+                body: "", bodyBase64: nil, media: ref),
+            enabled: true, effective: true)
+        store.save(MockRuleSnapshotStore.Snapshot(version: 3, rules: [rule]))
+
+        let loaded = try XCTUnwrap(store.load(), "快照应可读回")
+        XCTAssertEqual(loaded.rules.first?.response.media, ref)
+        XCTAssertNil(loaded.rules.first?.response.bodyBase64, "大图规则快照不得携带字节")
+
+        // 冷启动：reset 后重新从磁盘加载并命中，media 字段可用。
+        MockRuleController.shared.snapshotStore = store
+        MockRuleController.shared.reset()
+        let hit = try XCTUnwrap(MockRuleController.shared.match(method: "GET", path: "/img/big.png"))
+        XCTAssertEqual(hit.media?.sha256, "abc123")
+    }
+
     /// ensureLoaded 懒加载：磁盘预写快照 + reset（模拟冷启动进程）→ 首次 match 命中磁盘快照；
     /// 磁盘为空 → match nil（fail-open，不 Mock）。
     func testEnsureLoadedLoadsDiskSnapshotOnFirstMatch() throws {

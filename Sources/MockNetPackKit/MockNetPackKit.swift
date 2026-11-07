@@ -12,7 +12,7 @@ import UIKit
 public enum MockNetPackKit {
 
     /// SDK 版本号。
-    public static let version = "1.1.0"
+    public static let version = "1.1.1"
 
     /// 响应体协议解码器：把私有二进制协议字节（如 xcp AES+gzip）解成可读
     /// UTF-8 文本，仅用于 Web 展示。 起为内部机制，由 registerBinaryCodec

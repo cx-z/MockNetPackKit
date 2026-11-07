@@ -310,6 +310,9 @@ final class TrafficCaptureController: @unchecked Sendable {
         longConnLastSnapshotAt = nil
         lock.unlock()
 
+        // M15：会话结束清空 media 字节缓存（规则快照里只剩 sha256，重新拉取即可）。
+        RuleMediaCache.shared.reset()
+
         // 还原注入、注销全局类；已创建会话的拦截由 canInit 静态开关兜底（stop 后 false）。
         URLSessionConfigurationInjector.uninstall()
         URLProtocol.unregisterClass(MockNetPackURLProtocol.self)
@@ -317,6 +320,15 @@ final class TrafficCaptureController: @unchecked Sendable {
         injectedValue = false   // 允许 stop 后再次 start/arm 时重新注入
         lock.unlock()
         log("traffic capture stopped")
+    }
+
+    /// 当前会话的 (serverURL, appID, did)：media 回放据此拼 media 端点。
+    /// 未 start（或尚未登记服务器）时返回 nil → RuleMediaCache fail-open。
+    var mediaReplayContext: (serverURL: URL, app: String, did: String)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let url = serverURLValue, let app = appIDValue, let did = didValue else { return nil }
+        return (url, app, did)
     }
 
     /// 消费心跳会话结果：首个有效会话在锁内取出启动批次，锁外上传，避免混入正常批次。
